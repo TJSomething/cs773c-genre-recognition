@@ -1,3 +1,7 @@
+import AssemblyKeys._ // put this at the top of the file
+
+assemblySettings
+
 name := "cs773c-genre-recognition"
 
 scalaVersion := "2.9.2"
