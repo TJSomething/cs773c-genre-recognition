@@ -8,6 +8,8 @@ import scala.reflect.Manifest
 import scala.collection.parallel._
 import scala.actors.Futures.future
 import scala.concurrent.forkjoin.ForkJoinPool
+import scala.annotation.tailrec
+import scala.util.control.Exception.allCatch
 
 object Util {
   val api = new EchoNestAPI("KRPNFJRX9QKTVBG70")
@@ -17,25 +19,27 @@ object Util {
     val sessionID = api.createDynamicPlaylist(params).getSession
 
     // Gets one song, however many tries it takes
+    @tailrec
     def getSong(): Song =
-      try {
-        // Try to get a song
+      // Wrap the call in an Either, which is pretty much functional exceptions
+      allCatch.either {
         api.getNextInDynamicPlaylist(sessionID).getSongs().get(0)
-      } catch {
-        // Catching Throwable is bad practice, but getNextInDynamicPlaylist 
-        // is badly behaved and may throw any number of Exceptions and Errors
-        case (_: Throwable) => {
+      } match {
+        case Left(_) => {
           // If anything bad happens, wait one second
           Thread.sleep(1000)
           // And try again
           getSong()
         }
+        // If if works, give us the results 
+        case Right(x) => x
       }
 
     // Gets all of the unique songs needed
     /* Note that the reason that we need all of this fanciness is that,
      * when we grab songs in parallel, we may get duplicate songs.
      */
+    @tailrec
     def getUniqueSongs(accum: Set[Song]): Set[Song] = {
       if (accum.size >= qty) {
         // If we have enough, return the songs
