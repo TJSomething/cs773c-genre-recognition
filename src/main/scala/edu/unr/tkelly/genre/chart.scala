@@ -1,25 +1,21 @@
-import com.echonest.api.v4.{Params, EchoNestAPI, Playlist, Segment}
+package edu.unr.tkelly.genre
+
+import com.echonest.api.v4._
 import scala.collection.JavaConversions._
 import breeze.plot._
-import com.echonest.api.v4.Song
 import breeze.linalg.DenseMatrix
-import scala.reflect.Manifest
+import scala.Array.canBuildFrom
 
-object chart extends App {
-	def getSongsByStylePlaylist(en: EchoNestAPI, style: String, qty: Int) = {
-	  val query = new Params
+object Chart extends App {
+	def plotSongFromStyle(plot: Plot, style: String) = {
+	  val query = new PlaylistParams
 	  
 	  // Compose a query
 	  query.add("style", style)
-	  query.add("results", qty)
 	  query.add("bucket", "audio_summary")
-	  query.add("type", "artist-description")
+	  query.add("type", "artist-description")	  
 	  
-	  en.createStaticPlaylist(query)
-	}
-	
-	def plotSongFromStyle(en: EchoNestAPI, plot: Plot, style: String) = {
-	  val song = getSongsByStylePlaylist(en, style, 1).getSongs()(0)
+	  val song = Util.getSongs(query, 1).head
 	  val features = song.getAnalysis().getSegments().toArray(manifest[Segment])
 	  val featureCount = features(0).getTimbre().length + 
 	                     features(0).getPitches().length
@@ -45,10 +41,10 @@ object chart extends App {
 	val en = new EchoNestAPI("KRPNFJRX9QKTVBG70")
 	val fig = Figure()
 	
-	plotSongFromStyle(en, fig.subplot(3, 2, 0), "classical")
-	plotSongFromStyle(en, fig.subplot(3, 2, 2), "classical")
-	plotSongFromStyle(en, fig.subplot(3, 2, 4), "classical")
-	plotSongFromStyle(en, fig.subplot(3, 2, 1), "rock")
-	plotSongFromStyle(en, fig.subplot(3, 2, 3), "metal")
-	plotSongFromStyle(en, fig.subplot(3, 2, 5), "pop")
+	plotSongFromStyle(fig.subplot(3, 2, 0), "classical")
+	plotSongFromStyle(fig.subplot(3, 2, 2), "classical")
+	plotSongFromStyle(fig.subplot(3, 2, 4), "classical")
+	plotSongFromStyle(fig.subplot(3, 2, 1), "rock")
+	plotSongFromStyle(fig.subplot(3, 2, 3), "metal")
+	plotSongFromStyle(fig.subplot(3, 2, 5), "pop")
 }
