@@ -7,6 +7,7 @@ import breeze.linalg.DenseMatrix
 import scala.Array.canBuildFrom
 
 object Chart extends App {
+  // Draw a plot of a random song of the specified style
   def plotSongFromStyle(plot: Plot, style: String) = {
     val query = new PlaylistParams
 
@@ -15,10 +16,11 @@ object Chart extends App {
     query.add("bucket", "audio_summary")
     query.add("type", "artist-description")
 
+    // Get the features
     val song = Util.getSongs(query, 1).head
     val features = song.getAnalysis().getSegments().toArray(manifest[Segment])
-    val featureCount = features(0).getTimbre().length +
-      features(0).getPitches().length
+    
+    // Get a max and min for timber to normalize this song
     val timbres =
       for (
         segment <- features;
@@ -27,20 +29,31 @@ object Chart extends App {
     val timbreMin = timbres.min
     val timbreMax = timbres.max
 
-    val featureMat = DenseMatrix.tabulate(24, features.length)(
+    // Calculate lookup tables to show the data in 1/10s intervals
+    val timesToSegments =
+      for (
+        i <- 0 until features.length-1;
+        _ <- Array.fill((features(i+1).getStart * 100).toInt -
+          (features(i).getStart * 100).toInt) {}
+      ) yield i
+
+    // Put the data into a data structure made for drawing
+    val featureMat = DenseMatrix.tabulate(24, timesToSegments.length)(
       (r: Int, c: Int) => {
+        val segNum = timesToSegments(c)
         if (r < 12) {
-          (features(c).getTimbre()(r) - timbreMin) / (timbreMax - timbreMin)
+          (features(segNum).getTimbre()(r) - timbreMin)/ (timbreMax - timbreMin)
         } else {
-          features(c).getPitches()(r - 12)
+          features(segNum).getPitches()(r - 12)
         }
       })
+    // Set the title
     plot.title = style ++ " - " ++ song.getArtistName() ++ " - " ++
       song.getTitle()
+    // Draw the features
     plot += image(featureMat, new GradientPaintScale(0, 1, PaintScale.Rainbow))
   }
-
-  val en = new EchoNestAPI("KRPNFJRX9QKTVBG70")
+  
   val fig = Figure()
 
   plotSongFromStyle(fig.subplot(3, 2, 0), "classical")
