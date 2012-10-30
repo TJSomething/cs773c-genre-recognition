@@ -14,6 +14,7 @@ libraryDependencies ++= Seq(
         ExclusionRule(organization = "com.sun.jdmk"),
         ExclusionRule(organization = "com.sun.jmx"),
         ExclusionRule(organization = "javax.jms")
-      )
+      ),
+      "commons-lang" % "commons-lang" % "2.4"
 )
 

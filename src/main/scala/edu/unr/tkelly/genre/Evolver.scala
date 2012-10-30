@@ -24,14 +24,93 @@ import com.xtructure.xneat.operators.impl.NEATMutateOperatorSelecterImpl
 import com.xtructure.xneat.operators.impl.RemoveLinkMutateOperator
 import com.xtructure.xneat.operators.impl.StandardCrossoverOperator
 import com.xtructure.xutil.coll.MapBuilder
-import com.xtructure.xutil.id.XId
+import com.xtructure.xutil.id._
+
+import scala.collection.JavaConversions._
+
+import com.echonest.api.v4._
+
+import scala.math._
 
 object BeatlesEvaluationStrategy
   extends AbstractEvaluationStrategy[GeneMap, NeuralNetwork](
       NEATGenomeDecoder.getInstance())
   with EvaluationStrategy[GeneMap, NeuralNetwork] {
-  override def simulate(genome : Genome[GeneMap]) : Double = {
-    return 0.0
+  private val matchParams = new PlaylistParams
+  
+  matchParams.addArtist("The Beatles")
+  matchParams.setType(PlaylistParams.PlaylistType.ARTIST)
+  matchParams.add("bucket", "audio_summary")
+  
+  println("Getting Beatles songs...")
+  private val matchingSongs = Util.getSongs(matchParams, 50) 
+  
+  // Pick a wide variety of genres to compare with The Beatles
+  private val notParams = new PlaylistParams
+  for (style <- List("classical", "metal", "pop", "hiphop", "rock", "jazz")) {
+    notParams.addStyle(style)
+  }
+  // Pre-fetch analyses
+  println("Fetching Beatles song features...")
+  for (song <- matchingSongs.par) {
+    song.getAnalysis()
+  }
+  
+  notParams.setType(PlaylistParams.PlaylistType.ARTIST_DESCRIPTION)
+  notParams.add("bucket", "audio_summary")
+  
+  // Let's make sure that none of the found songs are by The Beatles
+  println("Getting non-Beatles songs...")
+  private var notSongs: Set[Song] = Set[Song]()
+  do {
+    notSongs ++= Util.getSongs(notParams, 50 - notSongs.size)
+    notSongs = notSongs.filter(song => song.getArtistName != "The Beatles")
+  } while (notSongs.size < 50)
+  // Pre-fetch analyses
+  println("Fetching non-Beatles song features...")
+  for (song <- notSongs.par) {
+    song.getAnalysis()
+  }
+  
+    
+  private val (trainingMatches, testMatches) = matchingSongs.splitAt(45)
+  private val (trainingNot, testNot) = notSongs.splitAt(45)
+  
+  val trainingSet = 
+    (trainingMatches.zip(Stream.continually {1.0}) ++
+     trainingNot.zip(Stream.continually {0.0})).toMap
+  val testSet = 
+    (testMatches.zip(Stream.continually {1.0}) ++
+     testNot.zip(Stream.continually {0.0})).toMap
+
+  override def simulate(genome: Genome[GeneMap]): Double = {
+    if (genome.getEvaluationCount == 0) {
+      val network = getGenomeDecoder().decode(genome)
+
+      // Calculate the RMS error for the network across all songs
+      genome.setAttribute(Genome.FITNESS_ATTRIBUTE_ID,
+        (1.0 - sqrt(
+          (
+            for ((song, matches) <- testSet.par) yield {
+              // Clear the network
+              network.clearSignals()
+              // Feed the whole song into the NN
+              for (seg <- song.getAnalysis().getSegments()) {
+                processSegment(network, seg)
+              }
+              // Calculate squared error
+              pow(network.getOutputSignals()(0) - matches, 2)
+            }).sum / trainingSet.size)).asInstanceOf[java.lang.Double])
+      genome.incrementEvaluationCount()
+    }
+    println("Fitness: " ++ genome.getFitness.toString)
+    genome.getFitness
+  }
+  
+  private def processSegment(network: NeuralNetwork, s: Segment) = {
+    network.setInputSignals(
+        (s.getTimbre ++ s.getPitches ++ Array[Double](s.getDuration)))
+    network.singleStep()
   }
 }
 
@@ -39,9 +118,9 @@ object ArtistEvolver extends App {
   // specify parameters
   val evolutionFieldMap = NEATEvolutionConfigurationImpl
     .builder(XId.newId("xor.neat.evolution.config")) 
-    .setPopulationSize(100) 
+    .setPopulationSize(10) 
     .setMutationProbability(0.5) 
-    .setInputNodeCount(2) 
+    .setInputNodeCount(25) 
     .setOutputNodeCount(1) 
     .setBiasNodeCount(0) 
     .newInstance().newFieldMap()
@@ -75,17 +154,16 @@ object ArtistEvolver extends App {
     geneticsFactory,
     crossoverOperatorSelecter,
     mutateOperatorSelecter)
-  // create evaluationStrategy
-  val evaluationStrategy = BeatlesEvaluationStrategy
   // create survival filter
   val survivalFilter = new NEATSurvivalFilterImpl(evolutionFieldMap)
   // create speciation strategy
   val speciationStrategy = new NEATSpeciationStrategyImpl(evolutionFieldMap)
   // create evolution strategy
+  println("create evolution strategy...")
   val evolutionStrategy = new NEATEvolutionStrategyImpl[NeuralNetwork](
     evolutionFieldMap,
     reproductionStrategy,
-    evaluationStrategy,
+    BeatlesEvaluationStrategy,
     survivalFilter,
     speciationStrategy, null)
   // start evolution
