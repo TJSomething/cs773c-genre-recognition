@@ -17,13 +17,17 @@ object Util {
   // Gets any number of unique songs following specified parameters
   def getSongs(params: PlaylistParams, qty: Int) = {
     val sessionID = api.createDynamicPlaylist(params).getSession
+    val needFeatures = params.getMap()("bucket") == "audio_summary"
 
     // Gets one song, however many tries it takes
     @tailrec
     def getSong(): Song =
       // Wrap the call in an Either, which is pretty much functional exceptions
       allCatch.either {
-        api.getNextInDynamicPlaylist(sessionID).getSongs().get(0)
+        val song = api.getNextInDynamicPlaylist(sessionID).getSongs().get(0)
+        if (needFeatures)
+          song.getAnalysis()
+        song
       } match {
         case Left(_) => {
           // If anything bad happens, wait one second
@@ -57,4 +61,7 @@ object Util {
     getUniqueSongs(Set())
   }
 
+  def songToShortString(s: Song) = {
+    s.getArtistName ++ " - " ++ s.getTitle
+  }
 }

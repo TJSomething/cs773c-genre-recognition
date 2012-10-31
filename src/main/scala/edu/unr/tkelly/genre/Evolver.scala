@@ -36,6 +36,9 @@ object BeatlesEvaluationStrategy
   extends AbstractEvaluationStrategy[GeneMap, NeuralNetwork](
       NEATGenomeDecoder.getInstance())
   with EvaluationStrategy[GeneMap, NeuralNetwork] {
+  val setSize = 100
+  val testSize = 10
+  
   private val matchParams = new PlaylistParams
   
   matchParams.addArtist("The Beatles")
@@ -43,17 +46,16 @@ object BeatlesEvaluationStrategy
   matchParams.add("bucket", "audio_summary")
   
   println("Getting Beatles songs...")
-  private val matchingSongs = Util.getSongs(matchParams, 50) 
+  private val matchingSongs = Util.getSongs(matchParams, setSize/2) 
   
   // Pick a wide variety of genres to compare with The Beatles
   private val notParams = new PlaylistParams
   for (style <- List("classical", "metal", "pop", "hiphop", "rock", "jazz")) {
     notParams.addStyle(style)
   }
-  // Pre-fetch analyses
-  println("Fetching Beatles song features...")
+  // Show names
   for (song <- matchingSongs.par) {
-    song.getAnalysis()
+    println(song.getArtistName ++ " - " ++ song.getTitle)
   }
   
   notParams.setType(PlaylistParams.PlaylistType.ARTIST_DESCRIPTION)
@@ -63,18 +65,19 @@ object BeatlesEvaluationStrategy
   println("Getting non-Beatles songs...")
   private var notSongs: Set[Song] = Set[Song]()
   do {
-    notSongs ++= Util.getSongs(notParams, 50 - notSongs.size)
+    notSongs ++= Util.getSongs(notParams, setSize/2 - notSongs.size)
     notSongs = notSongs.filter(song => song.getArtistName != "The Beatles")
-  } while (notSongs.size < 50)
-  // Pre-fetch analyses
-  println("Fetching non-Beatles song features...")
+  } while (notSongs.size < setSize/2)
+
+  // Show names
   for (song <- notSongs.par) {
+    println(song.getArtistName ++ " - " ++ song.getTitle)
     song.getAnalysis()
   }
   
-    
-  private val (trainingMatches, testMatches) = matchingSongs.splitAt(45)
-  private val (trainingNot, testNot) = notSongs.splitAt(45)
+  private val (trainingMatches, testMatches) = matchingSongs.splitAt((setSize - 
+      testSize)/2)
+  private val (trainingNot, testNot) = notSongs.splitAt((setSize-testSize)/2)
   
   val trainingSet = 
     (trainingMatches.zip(Stream.continually {1.0}) ++
@@ -83,27 +86,31 @@ object BeatlesEvaluationStrategy
     (testMatches.zip(Stream.continually {1.0}) ++
      testNot.zip(Stream.continually {0.0})).toMap
 
+  def calcFitness(sampleSet: Map[Song, Double], genome: Genome[GeneMap]) = {
+    val network = getGenomeDecoder().decode(genome)
+
+    // Calculate the RMS error for the network across all songs in the set
+    (1.0 - sqrt(
+      (
+        for ((song, matches) <- sampleSet.par) yield {
+          // Clear the network
+          network.clearSignals()
+          // Feed the whole song into the NN
+          for (seg <- song.getAnalysis().getSegments()) {
+            processSegment(network, seg)
+          }
+          // Calculate squared error
+          pow(network.getOutputSignals()(0) - matches, 2)
+        }).sum / trainingSet.size))
+  }
+  
   override def simulate(genome: Genome[GeneMap]): Double = {
     if (genome.getEvaluationCount == 0) {
-      val network = getGenomeDecoder().decode(genome)
-
       // Calculate the RMS error for the network across all songs
       genome.setAttribute(Genome.FITNESS_ATTRIBUTE_ID,
-        (1.0 - sqrt(
-          (
-            for ((song, matches) <- testSet.par) yield {
-              // Clear the network
-              network.clearSignals()
-              // Feed the whole song into the NN
-              for (seg <- song.getAnalysis().getSegments()) {
-                processSegment(network, seg)
-              }
-              // Calculate squared error
-              pow(network.getOutputSignals()(0) - matches, 2)
-            }).sum / trainingSet.size)).asInstanceOf[java.lang.Double])
+        calcFitness(trainingSet, genome).asInstanceOf[java.lang.Double])
       genome.incrementEvaluationCount()
     }
-    println("Fitness: " ++ genome.getFitness.toString)
     genome.getFitness
   }
   

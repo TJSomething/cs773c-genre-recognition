@@ -15,6 +15,8 @@ libraryDependencies ++= Seq(
         ExclusionRule(organization = "com.sun.jmx"),
         ExclusionRule(organization = "javax.jms")
       ),
-      "commons-lang" % "commons-lang" % "2.4"
+      "commons-lang" % "commons-lang" % "2.4",
+      "commons-cli" % "commons-cli" % "1.1"
 )
 
+scalacOptions ++= Seq("-unchecked", "-deprecation")
