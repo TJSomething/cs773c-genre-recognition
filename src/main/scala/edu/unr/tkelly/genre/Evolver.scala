@@ -115,9 +115,10 @@ object BeatlesEvaluationStrategy
   }
   
   private def processSegment(network: NeuralNetwork, s: Segment) = {
+    val state = network.getOutputSignals().slice(1, 6)
     network.setInputSignals(
         (s.getTimbre ++ s.getPitches.map(_/100.0) ++
-            Array[Double](s.getDuration)))
+            Array[Double](s.getDuration) ++ state))
     network.singleStep()
   }
 }
@@ -128,8 +129,8 @@ object ArtistEvolver extends App {
     .builder(XId.newId("xor.neat.evolution.config")) 
     .setPopulationSize(10) 
     .setMutationProbability(0.5) 
-    .setInputNodeCount(25) 
-    .setOutputNodeCount(1) 
+    .setInputNodeCount(30) 
+    .setOutputNodeCount(6) 
     .setBiasNodeCount(10)
     .newInstance().newFieldMap()
   // define operator distribution and build reproduction strategy

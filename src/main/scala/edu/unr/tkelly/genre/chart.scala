@@ -23,7 +23,6 @@ object Chart extends App {
       ) yield tFeature).sortWith(_ < _)
     val timbreMin = timbres(timbres.size/100)
     val timbreMax = timbres(99*timbres.size/100)
-    println((timbreMin, timbreMax))
 
     // Calculate lookup tables to show the data in 1/10s intervals
     val timesToSegments =
