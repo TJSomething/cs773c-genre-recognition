@@ -117,15 +117,15 @@ object BeatlesExperiment
     val mutateOperatorSelecter = new NEATMutateOperatorSelecterImpl(
       Map[MutateOperator[GeneMap], java.lang.Double](
         new AddLinkMutateOperator(getGeneticsFactory()) ->
-          0.05,
+          0.20,
         new AddNodeMutateOperator(getGeneticsFactory()) ->
-          0.05,
+          0.20,
         new AdjustAttributesMutateOperator(
           true, false,
           1.0, 1.0, getGeneticsFactory()) ->
           0.8,
         new RemoveLinkMutateOperator(getGeneticsFactory()) ->
-          0.1))
+          0.3))
     val crossoverOperatorSelecter =
       new NEATCrossoverOperatorSelecterImpl(
         Map[CrossoverOperator[GeneMap], java.lang.Double](

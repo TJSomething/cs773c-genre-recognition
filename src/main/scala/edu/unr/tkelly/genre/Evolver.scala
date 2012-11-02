@@ -90,7 +90,7 @@ object BeatlesEvaluationStrategy
     val network = getGenomeDecoder().decode(genome)
 
     // Calculate the RMS error for the network across all songs in the set
-    (1.0 - sqrt(
+    (1.0 - (
       (
         for ((song, matches) <- sampleSet.par) yield {
           // Clear the network
@@ -99,9 +99,9 @@ object BeatlesEvaluationStrategy
           for (seg <- song.getAnalysis().getSegments()) {
             processSegment(network, seg)
           }
-          // Calculate squared error
-          pow(network.getOutputSignals()(0) - matches, 2)
-        }).sum / trainingSet.size))
+          // Calculate match or not
+          abs(network.getOutputSignals()(0) - matches)
+        }).sum.toFloat / trainingSet.size))
   }
   
   override def simulate(genome: Genome[GeneMap]): Double = {
@@ -109,14 +109,15 @@ object BeatlesEvaluationStrategy
       // Calculate the RMS error for the network across all songs
       genome.setAttribute(Genome.FITNESS_ATTRIBUTE_ID,
         calcFitness(trainingSet, genome).asInstanceOf[java.lang.Double])
-      genome.incrementEvaluationCount()
     }
+    genome.incrementEvaluationCount()
     genome.getFitness
   }
   
   private def processSegment(network: NeuralNetwork, s: Segment) = {
     network.setInputSignals(
-        (s.getTimbre ++ s.getPitches ++ Array[Double](s.getDuration)))
+        (s.getTimbre ++ s.getPitches.map(_/100.0) ++
+            Array[Double](s.getDuration)))
     network.singleStep()
   }
 }
@@ -129,7 +130,7 @@ object ArtistEvolver extends App {
     .setMutationProbability(0.5) 
     .setInputNodeCount(25) 
     .setOutputNodeCount(1) 
-    .setBiasNodeCount(0) 
+    .setBiasNodeCount(10)
     .newInstance().newFieldMap()
   // define operator distribution and build reproduction strategy
   val geneticsFactory = new NEATGeneticsFactoryImpl(evolutionFieldMap)
@@ -137,10 +138,10 @@ object ArtistEvolver extends App {
     new MapBuilder[MutateOperator[GeneMap], java.lang.Double]() 
       .put( 
         new AddLinkMutateOperator(geneticsFactory), 
-        0.01) 
+        0.3) 
       .put( 
         new AddNodeMutateOperator(geneticsFactory), 
-        0.02) 
+        0.2) 
       .put( // mutate few links, one parameter at random
         new AdjustAttributesMutateOperator( 
           true, false, 
@@ -148,7 +149,7 @@ object ArtistEvolver extends App {
         0.95) 
       .put( 
         new RemoveLinkMutateOperator(geneticsFactory), 
-        0.01) 
+        0.04) 
       .newImmutableInstance())
   val crossoverOperatorSelecter = new NEATCrossoverOperatorSelecterImpl( 
     new MapBuilder [ CrossoverOperator [ GeneMap ], java.lang.Double ] () 

@@ -1,6 +1,10 @@
-import AssemblyKeys._ // put this at the top of the file
+import AssemblyKeys._
 
 assemblySettings
+
+mainClass in assembly := Some("edu.unr.tkelly.genre.Chart")
+
+
 
 name := "cs773c-genre-recognition"
 

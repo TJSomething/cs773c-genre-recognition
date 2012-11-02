@@ -5,29 +5,25 @@ import scala.collection.JavaConversions._
 import breeze.plot._
 import breeze.linalg.DenseMatrix
 import scala.Array.canBuildFrom
+import scala.actors.Futures.future
+import scala.math.abs
+import scala.collection.mutable.ListBuffer
 
 object Chart extends App {
-  // Draw a plot of a random song of the specified style
-  def plotSongFromStyle(plot: Plot, style: String) = {
-    val query = new PlaylistParams
-
-    // Compose a query
-    query.add("style", style)
-    query.add("bucket", "audio_summary")
-    query.add("type", "artist-description")
-
+  // Draw a plot of a song
+  def plotSong(plot: Plot, song: Song) = {
     // Get the features
-    val song = Util.getSongs(query, 1).head
     val features = song.getAnalysis().getSegments().toArray(manifest[Segment])
     
     // Get a max and min for timber to normalize this song
     val timbres =
-      for (
+      (for (
         segment <- features;
         tFeature <- segment.getTimbre
-      ) yield tFeature
-    val timbreMin = timbres.min
-    val timbreMax = timbres.max
+      ) yield tFeature).sortWith(_ < _)
+    val timbreMin = timbres(timbres.size/100)
+    val timbreMax = timbres(99*timbres.size/100)
+    println((timbreMin, timbreMax))
 
     // Calculate lookup tables to show the data in 1/10s intervals
     val timesToSegments =
@@ -48,18 +44,49 @@ object Chart extends App {
         }
       })
     // Set the title
-    plot.title = style ++ " - " ++ song.getArtistName() ++ " - " ++
+    plot.title = song.getArtistName() ++ " - " ++
       song.getTitle()
     // Draw the features
     plot += image(featureMat, new GradientPaintScale(0, 1, PaintScale.Rainbow))
   }
+  def plotSongFromStyle(plot: Plot, style: String) = {
+    val query = new PlaylistParams
+
+    // Compose a query
+    query.add("style", style)
+    query.add("bucket", "audio_summary")
+    query.add("type", "artist-description")
+
+    // Get the features
+    val song = Util.getSongs(query, 1).head
+    plotSong(plot, song)
+  }
   
   val fig = Figure()
+  
+  val params = new PlaylistParams
+  
+  params.addArtist("The Beatles")
+  params.setType(PlaylistParams.PlaylistType.ARTIST)
+  params.add("bucket", "audio_summary")
+  
+  val beatlesSongs = Util.getSongs(params, 3).toSeq
 
-  plotSongFromStyle(fig.subplot(3, 2, 0), "classical")
-  plotSongFromStyle(fig.subplot(3, 2, 2), "classical")
-  plotSongFromStyle(fig.subplot(3, 2, 4), "classical")
-  plotSongFromStyle(fig.subplot(3, 2, 1), "rock")
-  plotSongFromStyle(fig.subplot(3, 2, 3), "metal")
-  plotSongFromStyle(fig.subplot(3, 2, 5), "pop")
+  plotSong(fig.subplot(3, 2, 0), beatlesSongs(0))
+  plotSong(fig.subplot(3, 2, 2), beatlesSongs(1))
+  plotSong(fig.subplot(3, 2, 4), beatlesSongs(2)) 
+  
+	  val params2 = new PlaylistParams
+	  for (style <- List("classical", "metal", "pop", "hiphop", "rock", "jazz")) {
+	    params2.addStyle(style)
+	  }
+	  params2.setType(PlaylistParams.PlaylistType.ARTIST_DESCRIPTION)
+	  params2.add("bucket", "audio_summary")
+	  val otherSongs = Util.getSongs(params2, 3).toSeq
+	  
+	  plotSong(fig.subplot(3, 2, 1), otherSongs(0))
+	  plotSong(fig.subplot(3, 2, 3), otherSongs(1))
+	  plotSong(fig.subplot(3, 2, 5), otherSongs(2))
+	  
 }
+
