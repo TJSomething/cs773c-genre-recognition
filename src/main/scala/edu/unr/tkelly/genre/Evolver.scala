@@ -88,16 +88,49 @@ object BeatlesEvaluationStrategy
 
   def calcFitness(sampleSet: Map[Song, Double], genome: Genome[GeneMap]) = {
     val network = getGenomeDecoder().decode(genome)
+    println("Evaluating " ++ genome.getId.toString)
 
     // Calculate the RMS error for the network across all songs in the set
     (1.0 - (
       (
         for ((song, matches) <- sampleSet.par) yield {
+          var input = Array[Double](30)
+          var timbre: Array[Double] = null
+          var pitch: Array[Double] = null
+          var currentSegment: Segment = null
+          var state: Array[Double] = null
+          val segmentsIter = song.getAnalysis().getSegments().iterator()
+          
           // Clear the network
           network.clearSignals()
           // Feed the whole song into the NN
-          for (seg <- song.getAnalysis().getSegments()) {
-            processSegment(network, seg)
+          // Note that this bit is painfully imperative because performance is
+          // key
+          var i = 0
+          while (segmentsIter.hasNext) {
+            i = 0
+            currentSegment = segmentsIter.next()
+            
+            while (i < 12) {
+              input(i) = currentSegment.getTimbre()(i)
+              i += 1
+            }
+            
+            while (i < 24) {
+              input(i) = currentSegment.getPitches()(i-12)/100.0
+              i += 1
+            }
+            
+            input(24) = currentSegment.getDuration
+            i += 1
+            
+            state = network.getOutputSignals
+            while (i < 30) {
+              input(i) = state(i-24)
+            }
+            
+            network.setInputSignals(input)
+            network.singleStep()
           }
           // Calculate match or not
           abs(network.getOutputSignals()(0) - matches)
@@ -114,13 +147,13 @@ object BeatlesEvaluationStrategy
     genome.getFitness
   }
   
-  private def processSegment(network: NeuralNetwork, s: Segment) = {
+  /*private def processSegment(network: NeuralNetwork, s: Segment) = {
     val state = network.getOutputSignals().slice(1, 6)
     network.setInputSignals(
         (s.getTimbre ++ s.getPitches.map(_/100.0) ++
             Array[Double](s.getDuration) ++ state))
     network.singleStep()
-  }
+  }*/
 }
 
 object ArtistEvolver extends App {
