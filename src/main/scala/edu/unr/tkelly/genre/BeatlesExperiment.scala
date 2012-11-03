@@ -161,9 +161,9 @@ object BeatlesExperiment
     .builder(XId.newId("beatles.config")) 
     .setPopulationSize(100) 
     .setMutationProbability(0.5) 
-    .setInputNodeCount(25) 
-    .setOutputNodeCount(1) 
-    .setBiasNodeCount(0) 
+    .setInputNodeCount(30) 
+    .setOutputNodeCount(6) 
+    .setBiasNodeCount(5) 
     .newInstance().newFieldMap()
   }
 
