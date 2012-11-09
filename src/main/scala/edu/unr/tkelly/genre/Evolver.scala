@@ -36,55 +36,7 @@ object BeatlesEvaluationStrategy
   extends AbstractEvaluationStrategy[GeneMap, NeuralNetwork](
       NEATGenomeDecoder.getInstance())
   with EvaluationStrategy[GeneMap, NeuralNetwork] {
-  val setSize = 100
-  val testSize = 10
-  
-  private val matchParams = new PlaylistParams
-  
-  matchParams.addArtist("The Beatles")
-  matchParams.setType(PlaylistParams.PlaylistType.ARTIST)
-  matchParams.add("bucket", "audio_summary")
-  
-  println("Getting Beatles songs...")
-  private val matchingSongs = Util.getSongs(matchParams, setSize/2) 
-  
-  // Pick a wide variety of genres to compare with The Beatles
-  private val notParams = new PlaylistParams
-  for (style <- List("classical", "metal", "pop", "hiphop", "rock", "jazz")) {
-    notParams.addStyle(style)
-  }
-  // Show names
-  for (song <- matchingSongs.par) {
-    println(song.getArtistName ++ " - " ++ song.getTitle)
-  }
-  
-  notParams.setType(PlaylistParams.PlaylistType.ARTIST_DESCRIPTION)
-  notParams.add("bucket", "audio_summary")
-  
-  // Let's make sure that none of the found songs are by The Beatles
-  println("Getting non-Beatles songs...")
-  private var notSongs: Set[Song] = Set[Song]()
-  do {
-    notSongs ++= Util.getSongs(notParams, setSize/2 - notSongs.size)
-    notSongs = notSongs.filter(song => song.getArtistName != "The Beatles")
-  } while (notSongs.size < setSize/2)
-
-  // Show names
-  for (song <- notSongs.par) {
-    println(song.getArtistName ++ " - " ++ song.getTitle)
-    song.getAnalysis()
-  }
-  
-  private val (trainingMatches, testMatches) = matchingSongs.splitAt((setSize - 
-      testSize)/2)
-  private val (trainingNot, testNot) = notSongs.splitAt((setSize-testSize)/2)
-  
-  val trainingSet = 
-    (trainingMatches.zip(Stream.continually {1.0}) ++
-     trainingNot.zip(Stream.continually {0.0})).toMap
-  val testSet = 
-    (testMatches.zip(Stream.continually {1.0}) ++
-     testNot.zip(Stream.continually {0.0})).toMap
+  val data = new BeatlesData(90, 10)
 
   def calcFitness(sampleSet: Map[Song, Double], genome: Genome[GeneMap]) = {
     val network = getGenomeDecoder().decode(genome)
@@ -94,9 +46,7 @@ object BeatlesEvaluationStrategy
     (1.0 - (
       (
         for ((song, matches) <- sampleSet.par) yield {
-          var input = Array[Double](30)
-          var timbre: Array[Double] = null
-          var pitch: Array[Double] = null
+          var input = Array.fill(30){0.0}
           var currentSegment: Segment = null
           var state: Array[Double] = null
           val segmentsIter = song.getAnalysis().getSegments().iterator()
@@ -112,12 +62,12 @@ object BeatlesEvaluationStrategy
             currentSegment = segmentsIter.next()
             
             while (i < 12) {
-              input(i) = currentSegment.getTimbre()(i)
+              input(i) = currentSegment.getTimbre()(i)/100.0
               i += 1
             }
             
             while (i < 24) {
-              input(i) = currentSegment.getPitches()(i-12)/100.0
+              input(i) = currentSegment.getPitches()(i-12)
               i += 1
             }
             
@@ -127,21 +77,24 @@ object BeatlesEvaluationStrategy
             state = network.getOutputSignals
             while (i < 30) {
               input(i) = state(i-24)
+              i += 1
             }
             
             network.setInputSignals(input)
             network.singleStep()
+            
+            segmentsIter.remove()
           }
           // Calculate match or not
           abs(network.getOutputSignals()(0) - matches)
-        }).sum.toFloat / trainingSet.size))
+        }).sum.toFloat / data.trainingSet.size))
   }
   
   override def simulate(genome: Genome[GeneMap]): Double = {
     if (genome.getEvaluationCount == 0) {
       // Calculate the RMS error for the network across all songs
       genome.setAttribute(Genome.FITNESS_ATTRIBUTE_ID,
-        calcFitness(trainingSet, genome).asInstanceOf[java.lang.Double])
+        calcFitness(data.trainingSet, genome).asInstanceOf[java.lang.Double])
     }
     genome.incrementEvaluationCount()
     genome.getFitness

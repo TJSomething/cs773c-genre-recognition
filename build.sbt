@@ -20,7 +20,8 @@ libraryDependencies ++= Seq(
         ExclusionRule(organization = "javax.jms")
       ),
       "commons-lang" % "commons-lang" % "2.4",
-      "commons-cli" % "commons-cli" % "1.1"
+      "commons-cli" % "commons-cli" % "1.1",
+      "nz.ac.waikato.cms.weka" % "weka-stable" % "3.6.6"
 )
 
 scalacOptions ++= Seq("-unchecked", "-deprecation")
