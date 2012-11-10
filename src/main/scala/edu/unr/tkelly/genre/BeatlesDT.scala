@@ -5,6 +5,9 @@ import scala.collection.JavaConversions._
 import java.io._
 import scala.util.Random.shuffle
 
+/** This object doesn't have a fixed function. It acts as a framework to
+ * to get data to test in WEKA.
+ */
 object BeatlesCSV extends App {
   private def printToFile(f: java.io.File)(op: java.io.PrintWriter => Unit) {
     val p = new java.io.PrintWriter(f)

@@ -23,7 +23,6 @@ class BeatlesData(val trainingSize: Int, val testSize: Int) {
   notParams.add("bucket", "audio_summary")
   
   // Let's make sure that none of the found songs are by The Beatles
-  println("Getting non-Beatles songs...")
   private var notSongs: Set[Song] = Set[Song]()
   do {
     notSongs ++= Util.getSongs(notParams, setSize/2 - notSongs.size)
