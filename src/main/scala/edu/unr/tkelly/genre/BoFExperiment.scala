@@ -2,7 +2,7 @@ package edu.unr.tkelly.genre
 
 object BoFExperiment extends App {
   // Get data
-  // Filter out non-music
+  val data = new BeatlesData(100, 50)
   
   // For several cluster counts
     // Using the training set
