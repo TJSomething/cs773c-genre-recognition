@@ -96,7 +96,7 @@ object BoFExperiment extends App {
         (histogram, sliceIndex) <- histograms.zipWithIndex;
         clusterIndex <- 0 until bagSizes(sliceIndex)
       ) {
-        instance.setValue(bagSizes.take(sliceIndex+1).sum + clusterIndex,
+        instance.setValue(bagSizes.take(sliceIndex).sum + clusterIndex,
           histogram(song).getOrElse(clusterIndex, 0).toDouble)
       }
       instance.setValue(bagSizes.sum,
