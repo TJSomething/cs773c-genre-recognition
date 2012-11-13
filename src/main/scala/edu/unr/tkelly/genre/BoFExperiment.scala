@@ -7,17 +7,18 @@ import weka.clusterers.SimpleKMeans
 import weka.core.{ Instance, Instances, Attribute, FastVector }
 import weka.classifiers.functions.SMO
 import weka.classifiers.Evaluation
+import scala.collection.GenSeq
 
 object BoFExperiment extends App {
   // Get data
   val data = new BeatlesData(100, 50)
-  val maxSliceLength = 3
   
   // Print out the data
   println("Training set:")
   for ((song,_) <- data.trainingSet) {
     println(Util.songToShortString(song))
   }
+  println("Test set:")
   for ((song,_) <- data.testSet) {
     println(Util.songToShortString(song))
   }
@@ -68,16 +69,16 @@ object BoFExperiment extends App {
         instances
   }
   
-  def combineHistograms(histograms: Seq[Map[String, Map[Int, Int]]],
-      bagSize: Int) = {
+  def combineHistograms(histograms: GenSeq[Map[String, Map[Int, Int]]],
+      bagSizes: GenSeq[Int]) = {
     // Make the attributes
-    val attributes = new FastVector(bagSize * maxSliceLength + 1)
+    val attributes = new FastVector(bagSizes.sum + 1)
     for (
-      sliceLength <- 1 to maxSliceLength;
+      (bagSize, sliceIndex) <- bagSizes.zipWithIndex;
       clusterIndex <- 0 until bagSize
     ) yield {
       attributes.addElement(
-        new Attribute("L%02dC%02d" format (sliceLength, clusterIndex)))
+        new Attribute("L%02dC%02d" format (sliceIndex+1, clusterIndex)))
     }
     val possibleBeatlesVals = new FastVector(2)
     possibleBeatlesVals.addElement("T")
@@ -89,16 +90,16 @@ object BoFExperiment extends App {
     val unifiedHistograms = new Instances("histograms", attributes, 0)
     unifiedHistograms.setClass(beatlesAttrib)
     for (song <- histograms(0).keys) {
-      val instance = new Instance(bagSize * maxSliceLength + 1)
+      val instance = new Instance(bagSizes.sum + 1)
       instance.setDataset(unifiedHistograms)
       for (
         (histogram, sliceIndex) <- histograms.zipWithIndex;
-        clusterIndex <- 0 until bagSize
+        clusterIndex <- 0 until bagSizes(sliceIndex)
       ) {
-        instance.setValue(sliceIndex * bagSize + clusterIndex,
+        instance.setValue(bagSizes.take(sliceIndex+1).sum + clusterIndex,
           histogram(song).getOrElse(clusterIndex, 0).toDouble)
       }
-      instance.setValue(maxSliceLength * bagSize,
+      instance.setValue(bagSizes.sum,
         if (song.matches("^The Beatles.*$")) "T" else "F")
 
       unifiedHistograms.add(instance)
@@ -115,18 +116,17 @@ object BoFExperiment extends App {
         acc.updated(song,
           histogram.updated(cluster, histogram.getOrElse(cluster, 0) + 1))
       })
-
-  // For several cluster counts
-  for (bagSize <- (100 to 400 by 50).par) {
+  
+  def evalBagSizes(bagSizes: GenSeq[Int]) = {
     // Using the training set
     // For several slice lengths
     val clusterInfo =
-      for (sliceLength <- 1 to maxSliceLength) yield {
+      for ((bagSize, sliceIndex) <- bagSizes.zipWithIndex) yield {
         // Split songs into overlapping slices for clustering
-        val slices = sliceSongs(data.trainingSet, sliceLength)
+        val slices = sliceSongs(data.trainingSet, sliceIndex+1)
 
         // Cluster the slices
-        val instances = convertSlicesToInstances(slices, sliceLength)
+        val instances = convertSlicesToInstances(slices, sliceIndex+1)
 
         val clusterer = new SimpleKMeans
         clusterer.setSeed(10)
@@ -153,7 +153,7 @@ object BoFExperiment extends App {
 
     // For every song, combine the histograms for each slice length into a 
     //   single vector.
-    val trainingHistograms = combineHistograms(clusterInfo.map(_._3), bagSize)
+    val trainingHistograms = combineHistograms(clusterInfo.map(_._3), bagSizes)
 
     // Train a support vector machine to recognize which songs match our
     //   criteria.
@@ -163,7 +163,7 @@ object BoFExperiment extends App {
     // Using the test set
     // For several slice lengths
     val perSliceTestHistograms = 
-      for (sliceLength <- 1 to maxSliceLength) yield {
+      for (sliceLength <- 1 to bagSizes.size) yield {
       // Split songs into overlapping slices for clustering
       val slices = sliceSongs(data.testSet, sliceLength).toSeq
       // Use clustering data from training to cluster slices
@@ -173,7 +173,7 @@ object BoFExperiment extends App {
       	    .clusterInstance(instances.instance(index))))
     }
     // Construct a histogram of clusters for each song
-    val testHistograms = combineHistograms(perSliceTestHistograms, bagSize) 
+    val testHistograms = combineHistograms(perSliceTestHistograms, bagSizes) 
     // Classify song histograms using trained SVM and check accuracy
     val eval = new Evaluation(trainingHistograms)
     val output = new java.lang.StringBuffer
@@ -181,9 +181,9 @@ object BoFExperiment extends App {
     
     // Print info
     println("-" * 80)
-    println("Bag size: " ++ bagSize.toString)
+    println("Bag size: " ++ bagSizes.toString)
     println()
-    for (sliceLength <- 1 to maxSliceLength) {
+    for (sliceLength <- 1 to bagSizes.size) {
       println(sliceLength.toString ++ "-segment clusterer:")
       println(clusterInfo(sliceLength-1)._1.toString)
     }
@@ -191,5 +191,12 @@ object BoFExperiment extends App {
     println(classifier.toString)
     println("Test results:")
     println(eval.toSummaryString)
+    
+    eval.pctCorrect()/100.0
+  }
+
+  // For several cluster counts
+  for (bagSize <- (100 to 400 by 50).par) {
+    evalBagSizes(Seq.fill(4)(bagSize).par)
   }
 }
