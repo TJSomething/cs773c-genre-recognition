@@ -194,9 +194,19 @@ object BoFExperiment extends App {
     
     eval.pctCorrect()/100.0
   }
+  
+  def time[R](block: => R): R = {
+    val t0 = System.nanoTime()
+    val result = block    // call-by-name
+    val t1 = System.nanoTime()
+    println("Elapsed time: " + (t1 - t0) + "ns")
+    result
+  }
 
   // For several cluster counts
   for (bagSize <- (50 to 150 by 10).par) {
-    evalBagSizes(Seq.fill(4)(bagSize).par)
+    time {
+      evalBagSizes(Seq.fill(4)(bagSize).par)
+    }
   }
 }
