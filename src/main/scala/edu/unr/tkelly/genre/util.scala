@@ -13,7 +13,7 @@ import scala.util.control.Exception.allCatch
 
 object Util {
   val api = new EchoNestAPI("KRPNFJRX9QKTVBG70")
-  val verbose = true
+  val verbose = false
 
   // Gets any number of unique songs following specified parameters
   def getSongs(params: PlaylistParams, qty: Int) = {

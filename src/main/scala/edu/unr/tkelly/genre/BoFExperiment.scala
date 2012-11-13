@@ -10,8 +10,17 @@ import weka.classifiers.Evaluation
 
 object BoFExperiment extends App {
   // Get data
-  val data = new BeatlesData(10, 6)
+  val data = new BeatlesData(100, 50)
   val maxSliceLength = 3
+  
+  // Print out the data
+  println("Training set:")
+  for ((song,_) <- data.trainingSet) {
+    println(Util.songToShortString(song))
+  }
+  for ((song,_) <- data.testSet) {
+    println(Util.songToShortString(song))
+  }
   
   def sliceSongs(songs: Map[Song, Double], sliceLength: Int) =
     shuffle(
@@ -64,7 +73,7 @@ object BoFExperiment extends App {
     // Make the attributes
     val attributes = new FastVector(bagSize * maxSliceLength + 1)
     for (
-      sliceLength <- 0 until maxSliceLength;
+      sliceLength <- 1 to maxSliceLength;
       clusterIndex <- 0 until bagSize
     ) yield {
       attributes.addElement(
@@ -108,7 +117,7 @@ object BoFExperiment extends App {
       })
 
   // For several cluster counts
-  for (bagSize <- 100 to 400 by 50) {
+  for (bagSize <- (100 to 400 by 50).par) {
     // Using the training set
     // For several slice lengths
     val clusterInfo =
@@ -153,13 +162,14 @@ object BoFExperiment extends App {
 
     // Using the test set
     // For several slice lengths
-    val perSliceTestHistograms = for (sliceLength <- 1 to maxSliceLength) yield {
+    val perSliceTestHistograms = 
+      for (sliceLength <- 1 to maxSliceLength) yield {
       // Split songs into overlapping slices for clustering
       val slices = sliceSongs(data.testSet, sliceLength).toSeq
       // Use clustering data from training to cluster slices
       val instances = convertSlicesToInstances(slices, sliceLength)
       makeHistograms(for (index <- 0 until instances.numInstances()) yield
-      	(slices(index)._2, clusterInfo(sliceLength)._1
+      	(slices(index)._2, clusterInfo(sliceLength-1)._1
       	    .clusterInstance(instances.instance(index))))
     }
     // Construct a histogram of clusters for each song
@@ -168,8 +178,18 @@ object BoFExperiment extends App {
     val eval = new Evaluation(trainingHistograms)
     val output = new java.lang.StringBuffer
     eval.evaluateModel(classifier, testHistograms)
+    
+    // Print info
     println("-" * 80)
     println("Bag size: " ++ bagSize.toString)
+    println()
+    for (sliceLength <- 1 to maxSliceLength) {
+      println(sliceLength.toString ++ "-segment clusterer:")
+      println(clusterInfo(sliceLength-1)._1.toString)
+    }
+    
+    println(classifier.toString)
+    println("Test results:")
     println(eval.toSummaryString)
   }
 }
