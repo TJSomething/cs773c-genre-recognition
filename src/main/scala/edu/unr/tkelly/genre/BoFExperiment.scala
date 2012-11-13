@@ -206,7 +206,7 @@ object BoFExperiment extends App {
   // For several cluster counts
   for (bagSize <- (50 to 150 by 10).par) {
     time {
-      evalBagSizes(Seq.fill(4)(bagSize).par)
+      evalBagSizes(Seq.fill(4)(bagSize))
     }
   }
 }
