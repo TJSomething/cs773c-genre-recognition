@@ -10,8 +10,7 @@ import weka.classifiers.Evaluation
 import scala.collection.GenSeq
 import scala.collection.parallel.immutable.ParVector
 import scala.util.Random._
-import scalaz._
-import Scalaz._
+import scala.collection.mutable
 
 object BoFExperiment extends App {
   // Get data
@@ -246,15 +245,14 @@ object BoFExperiment extends App {
     select(randomNum, pop zip fitnesses)
   }
 
-  val memoizedFitness = mutableHashMapMemo(
-    (genome: GenSeq[Int]) => time {
-      evalBagSizes(genome)
-    })
+  val memoizedFitness = mutable.HashMap[GenSeq[Int], Double]()
   
   // The actual evolution loop
   while (true) {
     // Fitness evaluation
-    val fitnesses = population map memoizedFitness
+    val fitnesses = population.par map (genome =>
+        memoizedFitness.getOrElse(genome, evalBagSizes(genome)))
+    memoizedFitness ++= population.zip(fitnesses).toStream
     
     // Keep track of the best
     if (fitnesses.max > bestFitness) {
