@@ -8,6 +8,10 @@ import weka.core.{ Instance, Instances, Attribute, FastVector }
 import weka.classifiers.functions.SMO
 import weka.classifiers.Evaluation
 import scala.collection.GenSeq
+import scala.collection.parallel.immutable.ParVector
+import scala.util.Random._
+import scalaz._
+import Scalaz._
 
 object BoFExperiment extends App {
   // Get data
@@ -203,10 +207,84 @@ object BoFExperiment extends App {
     result
   }
 
-  // For several cluster counts
-  for (bagSize <- (50 to 150 by 10).par) {
-    time {
-      evalBagSizes(Seq.fill(4)(bagSize))
+  // Genetic algorithm
+  // GA paramters
+  val popSize = 4 // This is set so that one genome will run on each processor
+  
+  // Initialization for GA
+  var bestGenome: GenSeq[Int] = GenSeq[Int]()
+  var bestFitness = 0.0
+  var population: GenSeq[GenSeq[Int]] = ParVector.fill(popSize) {
+    Seq.fill(4) {
+      nextInt(199) + 1
     }
+  }
+  var generation = 0
+  
+  def mutate(pop: GenSeq[GenSeq[Int]]) = {
+    for (genome <- pop) yield {
+      for (gene <- genome) yield {
+        gene + (nextGaussian()*6).toInt
+      }
+    }
+  }
+  def crossover(parent1: GenSeq[Int], parent2: GenSeq[Int]) = {
+    val splitPoint = nextInt(parent1.size.min(parent2.size))
+    val splitP1 = parent1.splitAt(splitPoint)
+    val splitP2 = parent2.splitAt(splitPoint)
+    (splitP1._1 ++ splitP2._2, splitP2._1 ++ splitP1._2)
+  }
+  def selection(pop: GenSeq[GenSeq[Int]], fitnesses: GenSeq[Double]) = {
+    val totalFitness = fitnesses.sum
+    val randomNum = nextDouble()*totalFitness
+    def select(num: Double, pop: GenSeq[(GenSeq[Int],Double)]): GenSeq[Int] = {
+      if (num - pop.head._2 > 0.0)
+        select(num - pop.head._2, pop.tail)
+      else
+        pop.head._1
+    }
+    select(randomNum, pop zip fitnesses)
+  }
+
+  val memoizedFitness = mutableHashMapMemo(
+    (genome: GenSeq[Int]) => time {
+      evalBagSizes(genome)
+    })
+  
+  // The actual evolution loop
+  while (true) {
+    // Fitness evaluation
+    val fitnesses = population map memoizedFitness
+    
+    // Keep track of the best
+    if (fitnesses.max > bestFitness) {
+      bestFitness = fitnesses.max
+      bestGenome = population.maxBy(memoizedFitness)
+    }
+    
+    // Print status
+    println()
+    println("Generation " ++ generation.toString ++ ":")
+    println("Best genome: " ++ population.maxBy(memoizedFitness).toString)
+    println("Best fitness: " ++ fitnesses.max.toString)
+    println("Average fitness: " ++ (fitnesses.sum/fitnesses.size).toString)
+    println("Worst fitness: " ++ fitnesses.min.toString)
+    println()
+    println("All time:")
+    println("Best genome: " ++ bestGenome.toString)
+    println("Best fitness: " ++ bestFitness.toString)
+    
+
+    // Evolution stuff
+    population =
+      mutate(
+        (ParVector.fill(popSize / 2) {
+          val children = crossover(
+            selection(population, fitnesses),
+            selection(population, fitnesses))
+          List(children._1, children._2)
+        }).flatten)
+    
+    generation += 1 
   }
 }
