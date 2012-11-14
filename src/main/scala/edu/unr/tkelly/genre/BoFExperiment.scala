@@ -219,11 +219,13 @@ object BoFExperiment extends App {
     }
   }
   var generation = 0
+  val fitnessCache = mutable.HashMap[GenSeq[Int], Double]()
 
+  // All genes are mutated by adding a Gaussian
   def mutate(pop: GenSeq[GenSeq[Int]]) = {
     for (genome <- pop) yield {
       for (gene <- genome) yield {
-        val newGene = gene + (nextGaussian() * 6).toInt
+        val newGene = gene + (nextGaussian() * 10).toInt
         if (newGene < 2)
           2
         else
@@ -231,6 +233,7 @@ object BoFExperiment extends App {
       }
     }
   }
+  // Single-point crossover
   def crossover(parent1: GenSeq[Int], parent2: GenSeq[Int]) = {
     val splitPoint = nextInt(parent1.size.min(parent2.size))
     val splitP1 = parent1.splitAt(splitPoint)
@@ -262,25 +265,23 @@ object BoFExperiment extends App {
     select(randomNum, pop zip scaledFitnesses)
   }
 
-  val memoizedFitness = mutable.HashMap[GenSeq[Int], Double]()
-
   // The actual evolution loop
   while (true) {
     // Fitness evaluation
     val fitnesses = population.par map (genome =>
-      memoizedFitness.getOrElse(genome, evalBagSizes(genome)))
-    memoizedFitness ++= population.zip(fitnesses).toStream
+      fitnessCache.getOrElse(genome, evalBagSizes(genome)))
+    fitnessCache ++= population.zip(fitnesses).toStream
 
     // Keep track of the best
     if (fitnesses.max > bestFitness) {
       bestFitness = fitnesses.max
-      bestGenome = population.maxBy(memoizedFitness)
+      bestGenome = population.maxBy(fitnessCache)
     }
 
     // Print status
     println()
     println("Generation " ++ generation.toString ++ ":")
-    println("Best genome: " ++ population.maxBy(memoizedFitness).toString)
+    println("Best genome: " ++ population.maxBy(fitnessCache).toString)
     println("Best fitness: " ++ fitnesses.max.toString)
     println("Average fitness: " ++ (fitnesses.sum / fitnesses.size).toString)
     println("Worst fitness: " ++ fitnesses.min.toString)
