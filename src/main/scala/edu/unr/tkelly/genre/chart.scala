@@ -88,9 +88,5 @@ object Chart extends App {
   plotSong(fig.subplot(3, 2, 1), otherSongs(0))
   plotSong(fig.subplot(3, 2, 3), otherSongs(1))
   plotSong(fig.subplot(3, 2, 5), otherSongs(2))
-  
-  for ((stat, nums) <- Util.timbreStatistics(res)) {
-    println(stat ++ nums.mkString(",", ",", ""))
-  }
 }
 
