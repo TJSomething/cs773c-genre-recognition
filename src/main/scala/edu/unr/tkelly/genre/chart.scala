@@ -6,7 +6,6 @@ import breeze.plot._
 import breeze.linalg.DenseMatrix
 import scala.Array.canBuildFrom
 import scala.actors.Futures.future
-import scala.math.abs
 import scala.collection.mutable.ListBuffer
 
 object Chart extends App {
@@ -18,11 +17,13 @@ object Chart extends App {
     // Get a max and min for timber to normalize this song
     val timbres =
       (for (
-        segment <- features;
-        tFeature <- segment.getTimbre
-      ) yield tFeature).sortWith(_ < _)
-    val timbreMin = timbres(timbres.size/100)
-    val timbreMax = timbres(99*timbres.size/100)
+        segment <- features
+      ) yield segment.getTimbre).transpose.map(_.sortWith(_ < _))
+      
+    val timbreMin = for (timbreFeature <- timbres)
+      yield timbreFeature(timbreFeature.size/100)
+    val timbreMax = for (timbreFeature <- timbres)
+      yield timbreFeature(99*timbreFeature.size/100)
 
     // Calculate lookup tables to show the data in 1/10s intervals
     val timesToSegments =
@@ -33,11 +34,12 @@ object Chart extends App {
       ) yield i
 
     // Put the data into a data structure made for drawing
-    val featureMat = DenseMatrix.tabulate(24, timesToSegments.length)(
+    val featureMat = DenseMatrix.tabulate[Double](24, timesToSegments.length)(
       (r: Int, c: Int) => {
         val segNum = timesToSegments(c)
         if (r < 12) {
-          (features(segNum).getTimbre()(r) - timbreMin)/ (timbreMax - timbreMin)
+          ((features(segNum).getTimbre()(r) - timbreMin(r))/
+           (timbreMax(r) - timbreMin(r)))
         } else {
           features(segNum).getPitches()(r - 12)
         }
@@ -75,17 +77,20 @@ object Chart extends App {
   plotSong(fig.subplot(3, 2, 2), beatlesSongs(1))
   plotSong(fig.subplot(3, 2, 4), beatlesSongs(2)) 
   
-	  val params2 = new PlaylistParams
-	  for (style <- List("classical", "metal", "pop", "hiphop", "rock", "jazz")) {
-	    params2.addStyle(style)
-	  }
-	  params2.setType(PlaylistParams.PlaylistType.ARTIST_DESCRIPTION)
-	  params2.add("bucket", "audio_summary")
-	  val otherSongs = Util.getSongs(params2, 3).toSeq
-	  
-	  plotSong(fig.subplot(3, 2, 1), otherSongs(0))
-	  plotSong(fig.subplot(3, 2, 3), otherSongs(1))
-	  plotSong(fig.subplot(3, 2, 5), otherSongs(2))
-	  
+  val params2 = new PlaylistParams
+  for (style <- List("classical", "metal", "pop", "hiphop", "rock", "jazz")) {
+    params2.addStyle(style)
+  }
+  params2.setType(PlaylistParams.PlaylistType.ARTIST_DESCRIPTION)
+  params2.add("bucket", "audio_summary")
+  val otherSongs = Util.getSongs(params2, 3).toSeq
+  
+  plotSong(fig.subplot(3, 2, 1), otherSongs(0))
+  plotSong(fig.subplot(3, 2, 3), otherSongs(1))
+  plotSong(fig.subplot(3, 2, 5), otherSongs(2))
+  
+  for ((stat, nums) <- Util.timbreStatistics(res)) {
+    println(stat ++ nums.mkString(",", ",", ""))
+  }
 }
 

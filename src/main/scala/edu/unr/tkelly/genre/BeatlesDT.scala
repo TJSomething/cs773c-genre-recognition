@@ -21,7 +21,7 @@ object BeatlesCSV extends App {
     printToFile(dest)(p => {
       p.println(
         (for (
-          segmentIndex <- 0 until 4;
+          segmentIndex <- 0 until 60;
           featureIndex <- 0 until 25
         ) yield {
           if (featureIndex < 12) {
@@ -31,23 +31,14 @@ object BeatlesCSV extends App {
           } else {
             "S%02dD" format (segmentIndex)
           }
-        }).mkString("\t") ++ "\tis-Beatles\tstart-time\tartist\tsong-title")
+        }).mkString("\t") ++ "\tis-Beatles\tartist\tsong-title")
 
       shuffle(for (
-        (song, result) <- songs;
-        window <- song.getAnalysis()
-          .getSegments()
-          .toArray(manifest[Segment])
-          .iterator
-          .sliding(4)
+        (song, result) <- songs
       ) yield {
-        // Find the indices needed to map the data into centiseconds
-        /*val timesToSegments =
-        for (
-          i <- 0 until segments.length - 1;
-          _ <- Array.fill((segments(i + 1).getStart * 10).toInt -
-            (segments(i).getStart * 10).toInt) {}
-        ) yield i*/
+        val window= song.getAnalysis()
+          .getSegments()
+          .toArray(manifest[Segment]).take(60)
 
         (for (
           segment <- window;
@@ -62,13 +53,12 @@ object BeatlesCSV extends App {
           }
         }).mkString("\t") ++ "\t" ++
           (if (result > 0.5) "T" else "F") ++ "\t" ++
-          window(0).getStart.toString ++ "\t" ++
           song.getArtistName() ++ "\t" ++
           song.getTitle()
       }).foreach(p.println)
     })
   }
   
-  writeDataSet(data.trainingSet, new File("training.txt"))
-  writeDataSet(data.testSet, new File("test.txt"))
+  writeDataSet(data.trainingSet, new File("full_song_training.txt"))
+  writeDataSet(data.testSet, new File("full_song_test.txt"))
 }
