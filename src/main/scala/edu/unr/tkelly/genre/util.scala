@@ -15,33 +15,39 @@ import scala.collection.SeqLike
 
 object Util {
   val api = new EchoNestAPI("KRPNFJRX9QKTVBG70")
-  val verbose = false
+  val verbose = true
 
   // Gets any number of unique songs following specified parameters
   def getSongs(params: PlaylistParams, qty: Int) = {
-    val sessionID = api.createDynamicPlaylist(params).getSession
+    // Gets stuff, however many tries it takes
+    @tailrec
+    def keepTrying[T](f: => T): T =
+      // Wrap the call in an Either, which is pretty much functional exceptions
+      allCatch.either {
+        f
+      } match {
+        case Left(_) => {
+          // If anything bad happens, wait one second
+          Thread.sleep(1000)
+          // And try again
+          keepTrying(f)
+        }
+        // If if works, give us the results 
+        case Right(x) => x
+      }
+      
+    val sessionID = keepTrying {api.createDynamicPlaylist(params).getSession}
     val needFeatures = params.getMap()("bucket") == "audio_summary"
 
     // Gets one song, however many tries it takes
-    @tailrec
     def getSong(): Song =
-      // Wrap the call in an Either, which is pretty much functional exceptions
-      allCatch.either {
+      keepTrying {
         val song = api.getNextInDynamicPlaylist(sessionID).getSongs().get(0)
         if (needFeatures)
           song.getAnalysis()
         if (verbose)
           println("Downloading " ++ song.getArtistName ++ " - " ++ song.getTitle)
         song
-      } match {
-        case Left(_) => {
-          // If anything bad happens, wait one second
-          Thread.sleep(1000)
-          // And try again
-          getSong()
-        }
-        // If if works, give us the results 
-        case Right(x) => x
       }
 
     // Gets all of the unique songs needed
