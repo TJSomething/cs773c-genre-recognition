@@ -25,6 +25,7 @@ libraryDependencies ++= Seq(
       ),
       "commons-lang" % "commons-lang" % "2.4",
       "commons-cli" % "commons-cli" % "1.1",
+      "commons-io" % "commons-io" % "2.4",
       "nz.ac.waikato.cms.weka" % "weka-stable" % "3.6.6",
       "org.scalaz" %% "scalaz-core" % "6.0.4",
       "org.spark-project" %% "spark-core" % "0.6.0"

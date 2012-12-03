@@ -10,7 +10,7 @@ import com.echonest.api.v4._
 import scala.collection.JavaConversions._
 import java.util.Date
 import java.text.SimpleDateFormat
-import java.io.{ FileWriter, PrintWriter }
+import java.io.{ FileWriter, PrintWriter, File }
 import scala.util.Random.shuffle
 import weka.clusterers.SimpleKMeans
 import weka.core.{ Instance, Instances, Attribute, FastVector }
@@ -18,6 +18,13 @@ import weka.classifiers.functions.SMO
 import weka.classifiers.Evaluation
 import scala.collection.GenSeq
 import scala.util.Random
+import weka.core.neighboursearch.kdtrees.KMeansInpiredMethod
+import org.apache.commons.io.FileUtils._
+import scala.reflect.Code
+import spark.KryoRegistrator
+import com.esotericsoftware.kryo.Kryo
+  import java.io.{ ByteArrayOutputStream, ByteArrayInputStream }
+  import java.io.{ ObjectOutputStream, ObjectInputStream }
 
 object FinalExperiment extends App {
   // Notes for types
@@ -34,6 +41,131 @@ object FinalExperiment extends App {
   val bagCountByFrameLength = List(123, 7, 38, 100)
   val tasksPerCore = 1
   val spatialPyramidLevels = 3
+  
+  // Serialization stuff
+  // Splitting info
+  type SplitterFunc = Seq[Frame] => Seq[Seq[FrameVector]]
+  case class FeatureSplit(splitter: SplitterFunc,
+    featureLengths: List[Int], featureNames: List[String])
+
+  val splitInfo =
+    Seq(
+      FeatureSplit(framePassthrough[Seq] _,
+        List(25),
+        List("timbre_pitch_duration")),
+      FeatureSplit(frameSplit[Seq] _,
+        List(12, 12, 1),
+        List("timbre", "pitch", "duration")))
+
+  // We need a way to store everything related to a set of parameters, as
+  //  Spark dislikes nested data
+  case class FrameSetInfo(
+    foldIndex: Int,
+    splitMethod: FeatureSplit,
+    frameLength: Int,
+    featureType: Int,
+    song: String = "",
+    level: Int = -1,
+    region: Int = -1)
+  
+  // Make these classes serializable for JSON
+  /*object Protocols {
+    import dispatch.json._
+    implicit object SplitFormat extends Format[FeatureSplit] {
+      def writes(method: FeatureSplit) = {
+        method.featureNames match {
+          case x if x == splitInfo(0).featureNames => JsString("combined")
+          case x if x == splitInfo(1).featureNames => JsString("separate")
+          case _ => throw new RuntimeException("Unexpected splitting method")
+        }
+      }
+      def reads(value: JsValue) =
+        value match {
+          case JsString("combined") => splitInfo(0)
+          case JsString("separate") => splitInfo(1)
+          case _ => throw new RuntimeException("Unexpected splitter method")
+        }
+    }
+    implicit object InfoFormat extends Format[FrameSetInfo] {
+      def writes(i: FrameSetInfo): JsValue = 
+        JsObject(List(
+            (tojson("foldIndex").asInstanceOf[JsString], tojson(i.foldIndex))))
+      def reads(value: JsValue) =
+        value match {
+          case JsObject(m) => 
+            FrameSetInfo(fromjson[Int](m(JsString("foldIndex"))),
+                fromjson[FeatureSplit](m(JsString("splitMethod"))),
+                fromjson[Int](m(JsString("frameLength"))),
+                fromjson[Int](m(JsString("featureType"))),
+                fromjson[String](m(JsString("song"))),
+                fromjson[Int](m(JsString("level"))),
+                fromjson[Int](m(JsString("region"))))
+          case _ => serializationError("JsObject expected")
+        }
+    }
+    implicit val infoFormat: Format[FrameSetInfo] =
+      asProduct7("foldIndex",
+          "splitMethod",
+          "frameLength",
+          "featureType",
+          "song",
+          "level",
+          "region")(FrameSetInfo)(FrameSetInfo.unapply(_).get)
+      
+    implicit object KMeansFormat extends Format[SimpleKMeans] {
+      import java.io.{ ByteArrayOutputStream, ByteArrayInputStream }
+      import java.io.{ ObjectOutputStream, ObjectInputStream }
+      def writes(c: SimpleKMeans) = {
+        val baos = new ByteArrayOutputStream(1024)
+        val oos = new ObjectOutputStream(baos)
+        oos.writeObject(c)
+        oos.flush()
+        oos.close()
+        JsObject("forComputers" -> JsString(new sun.misc.BASE64Encoder().encode(baos.toByteArray)),
+          "forHumans" -> JsString(c.toString()))
+      }
+      def reads(value: JsValue) = {
+        value.asJsObject.getFields("forComputers", "forHumans") match {
+          case Seq(JsString(forComputers), JsString(forHumans)) => {
+            val bytes = new sun.misc.BASE64Decoder().decodeBuffer(forComputers)
+            val bais = new ByteArrayInputStream(bytes)
+            val ois = new ObjectInputStream(bais)
+            val result = ois.readObject() match {
+              case clusterer: SimpleKMeans => clusterer
+              case _ => throw new DeserializationException("SimpleKMeans expected")
+            }
+            ois.close()
+            result
+          }
+          case _ => throw new DeserializationException("SimpleKMeans expected")
+        }
+      }
+    }
+    
+  }*/
+  
+  // Also for Kryo serialization
+  class MyRegistrator extends KryoRegistrator {
+    override def registerClasses(kryo: Kryo) {
+      kryo.register(classOf[SimpleKMeans])
+      kryo.register(classOf[Instances])
+      kryo.register(classOf[FeatureSplit])
+      kryo.register(classOf[FrameSetInfo])
+    }
+  }
+  
+  /*case class FrameSetInfo(
+    foldIndex: Int,
+    splitMethod: FeatureSplit,
+    frameLength: Int,
+    featureType: Int,
+    song: String = "",
+    level: Int = -1,
+    region: Int = -1)*/
+  
+  // Spark properties
+  System.setProperty("spark.serializer", "spark.KryoSerializer")
+  System.setProperty("spark.kryo.registrator", "edu.unr.tkelly.genre.FinalExperiment$MyRegistrator")
 
   // Parse arguments
   val jobName = "MusicClassification"
@@ -65,8 +197,9 @@ object FinalExperiment extends App {
     sc.defaultMinSplits * sc.defaultParallelism * tasksPerCore)
 
   // Log to file
-  val logFileWriter = new FileWriter((new SimpleDateFormat("yyy-MM-dd HH:mm") format
-    new java.util.Date) + ".log", true)
+  val startTime = (new SimpleDateFormat("yyy-MM-dd HH:mm") format
+    new java.util.Date)
+  val logFileWriter = new FileWriter(startTime + ".log", true)
   def log(src: String, info: String) = {
     val p = new PrintWriter(logFileWriter)
     p.append("[" + (new SimpleDateFormat("yyy-MM-dd HH:mm") format
@@ -107,18 +240,6 @@ object FinalExperiment extends App {
     builder += sliceFrames(24, 25)
     builder.result
   }
-
-  // Splitting info
-  case class FeatureSplit(splitter: Seq[Frame] => Seq[Seq[FrameVector]],
-    featureLengths: List[Int], featureNames: List[String])
-  val splitInfo =
-    Seq(
-      FeatureSplit(framePassthrough[Seq] _,
-        List(25),
-        List("timbre_pitch_duration")),
-      FeatureSplit(frameSplit[Seq] _,
-        List(12, 12, 1),
-        List("timbre", "pitch", "duration")))
 
   // Turns song into an array of frames with attached times
   def splitSong(s: Song, frameLength: Int): SortedMap[Time, Frame] = {
@@ -199,7 +320,7 @@ object FinalExperiment extends App {
   // Split the songs into frames for serialization
   val splitSongSets =
     // For every cross-validation,
-    for ((training, testing) <- songSets) yield {
+    (for ((training, testing) <- songSets) yield {
       // Split songs with relevant information
       for (songSet <- List(training, testing)) yield {
         for (song <- songSet) yield {
@@ -209,36 +330,25 @@ object FinalExperiment extends App {
             })
         }
       }
-    }
+    }).zipWithIndex
   // Note that the dimensions on this are:
   // fold, training+testing, song, title*(start time -> frame)
 
-  // We need a way to store everything related to a set of parameters, as
-  //  Spark dislikes nested data
-  case class InfoWith[T](
-    data: T,
-    foldIndex: Int,
-    splitMethod: FeatureSplit,
-    frameLength: Int,
-    featureType: Int,
-    song: String = "",
-    level: Int = -1,
-    region: Int = -1)
-
-  // Split instances for clustering
-  val splitForClustering = for (
-    (List(training, testing), foldIndex) <- sc.parallelize(splitSongSets.zipWithIndex);
+  // Cluster instances
+  val clusterersWithInfo = (for (
+    (List(training, testing), foldIndex) <- sc.parallelize(splitSongSets);
     // Note that the dimensions of training and testing are:
     //  song, title*(frame length, time -> frames)
 
     // For combined or separated features (duration, timbre, pitch)
     splitMethod <- splitInfo;
-    framesByFrameLengthThenSong = 
-      (training map (song => song._2 map {_.values})).transpose.toSeq.sortBy(_.head.head.size);
     // Dimensions: frame length, song, frames, segments, features
     
-    framesByFrameLength = framesByFrameLengthThenSong map {_.flatten};
+    framesByFrameLengthThenSong = 
+      (training map (song => song._2 map {_.values})).transpose.toSeq.sortBy(_.head.head.size);
+    
     // Dimensions: frame length, frame, segment, feature
+    framesByFrameLength = framesByFrameLengthThenSong map {_.flatten};
     
     // Format frames for clustering
     frameVectorsByFrameLength = (framesByFrameLength map { frames: Iterable[Frame] =>
@@ -262,32 +372,59 @@ object FinalExperiment extends App {
   ) yield {
     /*println("Frame Length Index: " + frameIndex)
     println("Actual frame length = " + (instances.numAttributes/splitMethod.featureLengths(typeIndex)))*/
-    InfoWith[Instances](
-    instances,
-    foldIndex,
-    splitMethod,
-    frameIndex+1,
-    typeIndex)
-  }
-  
-  println(splitForClustering.count)
-  // Build the clusterers
-  val clusterersWithInfo =
-    for (instancesWithInfo <- splitForClustering) yield {
-      println("Frame length: " + instancesWithInfo.frameLength)
-      println("Bags: " + bagCountByFrameLength(instancesWithInfo.frameLength-1))
-      InfoWith(trainClusterer(instancesWithInfo.data,
-        bagCountByFrameLength(instancesWithInfo.frameLength-1)),
-        instancesWithInfo.foldIndex,
-        instancesWithInfo.splitMethod,
-        instancesWithInfo.frameLength,
-        instancesWithInfo.featureType)
-    }
-  
-  for (clusterer <- clusterersWithInfo.filter(_.frameLength == 2)) {
-    println(clusterer.toString)
+    (FrameSetInfo(
+      foldIndex,
+      splitMethod,
+      frameIndex + 1,
+      typeIndex),
+      trainClusterer(instances, bagCountByFrameLength(frameIndex)))
+  }).collect
+
+  // Serialize clusterers
+  for ((info, clusterer) <- clusterersWithInfo) {
+	    val baos = new ByteArrayOutputStream(1024)
+	    val oos = new ObjectOutputStream(baos)
+	    oos.writeObject(clusterer)
+	    oos.flush()
+	    oos.close()
+	  writeStringToFile(new File("clusterers_" + startTime + ".log"), 
+	      info + ":\n" + new sun.misc.BASE64Encoder().encode(baos.toByteArray) + "\n" + clusterer,
+	      true)
   }
 
-  // Test plain BoF, spatial BoF, NEAT+BoF
+  /*case class FrameSetInfo(
+    foldIndex: Int,
+    splitMethod: FeatureSplit,
+    frameLength: Int,
+    featureType: Int,
+    song: String = "",
+    level: Int = -1,
+    region: Int = -1)*/
+  // fold, training+testing, song, title*(start time -> frame)
+  
+  // Split instances for classification
+  /*for ((List(training, testing), foldIndex) <- sc.parallelize(splitSongSets);
+    // Note that the dimensions of training and testing are:
+    //  song, title*(frame length, time -> frames)
 
+    // For combined or separated features (duration, timbre, pitch)
+    splitMethod <- splitInfo;
+    
+    // Dimensions: frame length, song, frames, segments, features
+    framesByFrameLengthThenSong = 
+      (training map (song => song._2 map {_.values})).transpose.toSeq.sortBy(_.head.head.size);
+
+    // Convert frame vectors to Weka instances
+    instancesByFrameLength_Type = for (frameVectorsByFeatureType <- frameVectorsByFrameLength) yield {
+      for ((frameVectors, typeIndex) <- frameVectorsByFeatureType.zipWithIndex) yield {
+        convertFramesToInstances(frameVectors,
+          splitMethod.featureLengths(typeIndex),
+          splitMethod.featureNames(typeIndex))
+      }
+    };
+    (instancesByType, frameIndex) <- instancesByFrameLength_Type.zipWithIndex.par;
+    (instances, typeIndex) <- instancesByType.toSeq.zipWithIndex)*/
+  
+  // Test plain BoF
+  // Test temporal pyramid BoF
 }
