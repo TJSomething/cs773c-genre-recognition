@@ -369,7 +369,7 @@ object FinalExperiment extends App {
     
     val songArtistTitles = (for ((info, _) <- histograms) yield
         (info.artist, info.title))
-        .toSet
+        .toSet.toList
 
     // Build the instances
     val unifiedHistograms = new Instances("histograms", attributes, 0)
@@ -396,7 +396,7 @@ object FinalExperiment extends App {
       instance.setValue(numAttributes, if (artist == "The Beatles") "T" else "F")
     }
 
-    unifiedHistograms
+    (songArtistTitles, unifiedHistograms)
   }
   
   // Make a histogram from a series of clusters
@@ -557,18 +557,127 @@ object FinalExperiment extends App {
         .toSet;
     songTitle <- songTitles*/
       ) yield {
-    val allHistograms =
+    val trainingHistograms =
       regionHistograms
         .filter(record => record._1.foldIndex == foldIndex &&
             record._1.isSplit == isSplit &&
-            record._1.level <= level)
+            record._1.level <= level &&
+            record._1.isTraining == true)
         .collect.sortBy(_._1)(InfoOrdering)
-    val concatedHistos = combineHistograms(allHistograms, level)
+    val (_, concatedHistos) = combineHistograms(trainingHistograms, level)
     val classifier = new SMO
+    classifier.setRandomSeed(Random.nextInt)
     classifier.buildClassifier(concatedHistos)
     (FrameSetInfo(foldIndex, true, isSplit, -1, -1, "", "", level, -1),
         classifier)
   }
   
   serializeObjects("histogram-svm", histogramClassifiers)
+  
+  // Evaluate classifiers
+  val results = (for (
+      foldIndex <- 0 until folds;
+       isSplit <- List(true,false);
+       level <- 0 to temporalPyramidLevels;
+       classifier <- histogramClassifiers.collectFirst {
+        case (FrameSetInfo(foldIndex,
+          true,
+          isSplit,
+          _,
+          _,
+          _,
+          _,
+          level,
+          _), c) => c
+      }) yield {
+    val testHistograms = 
+      regionHistograms
+        .filter(record => record._1.foldIndex == foldIndex &&
+            record._1.isSplit == isSplit &&
+            record._1.level <= level &&
+            record._1.isTraining == false)
+        .collect.sortBy(_._1)(InfoOrdering)
+    val (artistTitles, concatedHistos) =
+      combineHistograms(testHistograms, level)
+    
+    // Evaluate it
+    val predictedNumericClasses =
+      for (instanceIndex <- artistTitles.indices) yield {
+        classifier.classifyInstance(concatedHistos.instance(instanceIndex))
+      }
+    val actualClasses = 
+      for ((artist, title) <- artistTitles) yield {
+        artist == "The Beatles"
+      }
+    val beatlesClassNumber =
+      actualClasses.zip(predictedNumericClasses)
+           .filter(_._1 == true)
+           .groupBy(identity)
+           .maxBy(_._2.size)._1._2
+    val predictedClasses = predictedNumericClasses.map(_ == beatlesClassNumber)
+    
+    for (((artist, title), actual, predicted) <- 
+        (artistTitles, actualClasses, predictedClasses).zipped.toList) yield {
+      (FrameSetInfo(foldIndex,
+          false,
+          isSplit,
+          -1,
+          -1,
+          artist,
+          title,
+          level,
+          -1), (actual, predicted))
+    }
+  }).flatten
+
+  // Print summary statistics by technique
+  for (
+    isSplit <- List(true, false);
+    level <- 0 to temporalPyramidLevels
+  ) yield {
+    println("Features were clustered by: " +
+      splitInfo(isSplit).featureNames.mkString(", "))
+    println("Temporal pyramid height: " + level)
+    println()
+    
+    // Get the results for the current technique
+    val matchingResult = results
+      .filter(record => record._1.isSplit == isSplit &&
+        record._1.level == level)
+      .sortBy(_._1)(InfoOrdering)
+    
+    // Stats 
+    val truePositives = matchingResult.count(_._2 == (true, true))
+    val trueNegatives = matchingResult.count(_._2 == (false, false))
+    val falsePositives = matchingResult.count(_._2 == (false, true))
+    val falseNegatives = matchingResult.count(_._2 == (true, false))
+    val accuracy = (truePositives + trueNegatives).toDouble /
+      matchingResult.size
+    
+    println("Confusion matrix:")
+    println("                               Actual")
+    println("                        Beatles     Not Beatles")
+    println("Predicted      Beatles %7d     %11d" format (truePositives, falsePositives))
+    println("           Not Beatles %7d     %11d" format (falseNegatives, trueNegatives))
+    println()
+    println("Accuracy: " + (accuracy.toString))
+    println()
+    println(matchingResult
+        .filter(_._2 == (true, true))
+        .map(record => record._1.artist + " - " + record._1.title)
+        .mkString("True positives:\n", "\n", "\n"))
+    println(matchingResult
+        .filter(_._2 == (false, false))
+        .map(record => record._1.artist + " - " + record._1.title)
+        .mkString("True negatives:\n", "\n", "\n"))
+    println(matchingResult
+        .filter(_._2 == (true, false))
+        .map(record => record._1.artist + " - " + record._1.title)
+        .mkString("False negative:\n", "\n", "\n"))
+    println(matchingResult
+        .filter(_._2 == (false, true))
+        .map(record => record._1.artist + " - " + record._1.title)
+        .mkString("False positives:\n", "\n", "\n"))
+    println()
+  }
 }
