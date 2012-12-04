@@ -574,16 +574,7 @@ object FinalExperiment extends App {
             record._1.level <= level &&
             record._1.isTraining == true).sortBy(_._1)(InfoOrdering)
     val (artistTitles, concatedHistos) = combineHistograms(trainingHistograms, level)
-    for (i <- artistTitles.indices)
-	    println(FrameSetInfo(foldIndex,
-	          false,
-	          isSplit,
-	          -1,
-	          -1,
-	          artistTitles(i)._1,
-	          artistTitles(i)._2,
-	          level,
-	          -1) + ": " + concatedHistos.instance(i).numAttributes)
+    
     val classifier = new SMO
     classifier.setRandomSeed(Random.nextInt)
     classifier.buildClassifier(concatedHistos)
@@ -593,20 +584,24 @@ object FinalExperiment extends App {
   
   serializeObjects("histogram-svm", histogramClassifiers)
   
+  for ((info, classifier) <- histogramClassifiers)
+	    println(info + ": " + 
+        classifier.attributeNames()(0)(1).size)
+  
   // Evaluate classifiers
   val results = (for (
       foldIndex <- (0 until folds);
        isSplit <- List(true,false);
        level <- 0 to temporalPyramidLevels;
        classifier <- histogramClassifiers.collectFirst {
-        case (FrameSetInfo(foldIndex,
+        case (FrameSetInfo(`foldIndex`,
           true,
-          isSplit,
+          `isSplit`,
           _,
           _,
           _,
           _,
-          level,
+          `level`,
           _), c) => c
       }) yield {
     val testHistograms = 
@@ -617,19 +612,10 @@ object FinalExperiment extends App {
             record._1.isTraining == false).sortBy(_._1)(InfoOrdering)
     val (artistTitles, concatedHistos) =
       combineHistograms(testHistograms, level)
-    println()
+
     // Evaluate it
     val predictedNumericClasses =
       for (instanceIndex <- artistTitles.indices) yield {
-	    println(FrameSetInfo(foldIndex,
-	          false,
-	          isSplit,
-	          -1,
-	          -1,
-	          artistTitles(instanceIndex)._1,
-	          artistTitles(instanceIndex)._2,
-	          level,
-	          -1) + ": " + concatedHistos.instance(instanceIndex).numAttributes)
         classifier.classifyInstance(concatedHistos.instance(instanceIndex))
       }
     val actualClasses = 
