@@ -35,9 +35,9 @@ object FinalExperiment extends App {
   type Time = Double
 
   // Some parameters
-  val folds = 10
-  val songCount = 10
-  val maxFrameLength = 4
+  val folds = 3
+  val songCount = 6
+  val maxFrameLength = 1
   val bagCountByFrameLength = List(123, 7, 38, 100)
   val tasksPerCore = 1
   val temporalPyramidLevels = 3
@@ -341,10 +341,7 @@ object FinalExperiment extends App {
       level: Int) = {
     // Make the attributes
     val localSplitInfo = splitInfo(histograms(0)._1.isSplit)
-    val numAttributes =
-      localSplitInfo.featureLengths.size *
-        bagCountByFrameLength.sum
-    val attributes = new FastVector(numAttributes + 1)
+    val attributes = new FastVector(0)
     for (
       segmentIndex <- 0 until maxFrameLength;
       featureType <- localSplitInfo.featureNames;
@@ -366,6 +363,9 @@ object FinalExperiment extends App {
     possibleBeatlesVals.addElement("F")
     val beatlesAttrib = new Attribute("isBeatles", possibleBeatlesVals)
     attributes.addElement(beatlesAttrib)
+    
+    val numAttributes =
+      attributes.size() - 1 
     
     val songArtistTitles = (for ((info, _) <- histograms) yield
         (info.artist, info.title))
@@ -394,6 +394,8 @@ object FinalExperiment extends App {
       }
       
       instance.setValue(numAttributes, if (artist == "The Beatles") "T" else "F")
+      
+      unifiedHistograms.add(instance)
     }
 
     (songArtistTitles, unifiedHistograms)
@@ -456,31 +458,30 @@ object FinalExperiment extends App {
     }).zipWithIndex
   // Note that the dimensions on this are:
   // fold, training+testing, song, frame length,
-  //    title*(start time -> (feature type, feature))
+  //    title*(start time -> (segment, feature))
 
   // Denormalize and broadcast the data
   val songRegionTable =
-    sc.parallelize(
-      for (
+    sc.broadcast(for (
         // Dimensions: training+testing, song, 
-        //    title*(start time -> (frame length, feature type, feature))
+        //    title*(start time -> (frame length, segment, feature))
         (fold, foldIndex) <- splitSongSets;
         // Dimensions: song, 
-        //    title*(frame length, start time -> (feature type, feature))
+        //    title*(frame length, start time -> (segment, feature))
         (isTraining, byTraining) <- Map(true -> fold(0), false -> fold(1));
         (isSplit, splitMethod) <- splitInfo;
-        // Dimensions: frame length, start time -> (feature type, feature)
+        // Dimensions: frame length, start time -> (segment, feature)
         ((artist, title), byFrameLength) <- byTraining;
-        // Dimensions: start time -> (feature type, feature)
+        // Dimensions: start time -> (segment, feature)
         (byStartTime, frameIndex) <- byFrameLength.zipWithIndex;
-        // Dimensions: segment, feature type, feature
+        // Dimensions: start segment, segment, feature
         bySegment = byStartTime.values;
-        // Dimensions: feature type, segment, feature
-        byFeatureType = bySegment.transpose;
-        // Dimensions: segment, feature
+        // Dimensions: feature type, start segment, segment, feature
+        byFeatureType = splitMethod.splitter(bySegment.toSeq);
+        // Dimensions: start segment, segment, feature
         (song, featureType) <- byFeatureType.zipWithIndex;
         level <- 0 to temporalPyramidLevels;
-        // region, segment, feature
+        // region, start segment, feature
         regions = groupedEvenly(song, 1 << level);
         // segment, feature
         (region, regionIndex) <- regions.zipWithIndex
@@ -488,10 +489,14 @@ object FinalExperiment extends App {
         isTraining,
         isSplit,
         frameIndex + 1,
-        featureType),
+        featureType,
+        artist,
+        title,
+        level,
+        regionIndex),
         convertFramesToInstances(region,
           splitInfo(isSplit).featureLengths(featureType),
-          splitInfo(isSplit).featureNames(featureType)))).cache()
+          splitInfo(isSplit).featureNames(featureType))))
 
   // Cluster instances
   val clusterersWithInfo = sc.broadcast((for (
@@ -499,17 +504,22 @@ object FinalExperiment extends App {
     isSplit <- List(true, false);
     frameLength <- 1 to maxFrameLength;
     featureType <- splitInfo(isSplit).featureLengths.indices;
-    matchingRegions = songRegionTable
+    matchingRegions = songRegionTable.value
       .filter(record => {
         val info = record._1
         info.foldIndex == foldIndex &&
           info.isSplit == isSplit &&
           info.frameLength == frameLength &&
           info.featureType == featureType &&
-          info.isTraining == true
+          info.isTraining == true &&
+          info.level == 0
       })
   ) yield {
-    val instances = matchingRegions.map(_._2).reduce(Instances.mergeInstances)
+    val instances = new Instances(matchingRegions(0)._2, 0)
+    for (subset <- matchingRegions;
+         index <- 0 until subset._2.numInstances()) {
+      instances.add(subset._2.instance(index))
+    }
     (FrameSetInfo(foldIndex,
       true,
       isSplit,
@@ -523,8 +533,8 @@ object FinalExperiment extends App {
 
   // Make histograms of all regions
   val regionHistograms =
-    for (
-      (info, region) <- songRegionTable;
+    (for (
+      (info, region) <- songRegionTable.value;
       clusterer <- clusterersWithInfo.value.collectFirst {
         case (FrameSetInfo(info.foldIndex,
           true,
@@ -541,11 +551,11 @@ object FinalExperiment extends App {
       makeHistogram(
         (0 until region.numInstances())
           .map(i => clusterer.clusterInstance(region.instance(i)))))
-    }
+    })
   
   // Train BoF SVM classifiers
-  val histogramClassifiers = for (
-    foldIndex <- 0 until folds;
+  val histogramClassifiers = (for (
+    foldIndex <- (0 until folds);
     isSplit <- List(true, false);
     level <- 0 to temporalPyramidLevels
     // Get the song titles for this fold
@@ -562,21 +572,30 @@ object FinalExperiment extends App {
         .filter(record => record._1.foldIndex == foldIndex &&
             record._1.isSplit == isSplit &&
             record._1.level <= level &&
-            record._1.isTraining == true)
-        .collect.sortBy(_._1)(InfoOrdering)
-    val (_, concatedHistos) = combineHistograms(trainingHistograms, level)
+            record._1.isTraining == true).sortBy(_._1)(InfoOrdering)
+    val (artistTitles, concatedHistos) = combineHistograms(trainingHistograms, level)
+    for (i <- artistTitles.indices)
+	    println(FrameSetInfo(foldIndex,
+	          false,
+	          isSplit,
+	          -1,
+	          -1,
+	          artistTitles(i)._1,
+	          artistTitles(i)._2,
+	          level,
+	          -1) + ": " + concatedHistos.instance(i).numAttributes)
     val classifier = new SMO
     classifier.setRandomSeed(Random.nextInt)
     classifier.buildClassifier(concatedHistos)
     (FrameSetInfo(foldIndex, true, isSplit, -1, -1, "", "", level, -1),
         classifier)
-  }
+  })
   
   serializeObjects("histogram-svm", histogramClassifiers)
   
   // Evaluate classifiers
   val results = (for (
-      foldIndex <- 0 until folds;
+      foldIndex <- (0 until folds);
        isSplit <- List(true,false);
        level <- 0 to temporalPyramidLevels;
        classifier <- histogramClassifiers.collectFirst {
@@ -595,14 +614,22 @@ object FinalExperiment extends App {
         .filter(record => record._1.foldIndex == foldIndex &&
             record._1.isSplit == isSplit &&
             record._1.level <= level &&
-            record._1.isTraining == false)
-        .collect.sortBy(_._1)(InfoOrdering)
+            record._1.isTraining == false).sortBy(_._1)(InfoOrdering)
     val (artistTitles, concatedHistos) =
       combineHistograms(testHistograms, level)
-    
+    println()
     // Evaluate it
     val predictedNumericClasses =
       for (instanceIndex <- artistTitles.indices) yield {
+	    println(FrameSetInfo(foldIndex,
+	          false,
+	          isSplit,
+	          -1,
+	          -1,
+	          artistTitles(instanceIndex)._1,
+	          artistTitles(instanceIndex)._2,
+	          level,
+	          -1) + ": " + concatedHistos.instance(instanceIndex).numAttributes)
         classifier.classifyInstance(concatedHistos.instance(instanceIndex))
       }
     val actualClasses = 
