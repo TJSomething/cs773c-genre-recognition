@@ -65,12 +65,39 @@ object FinalExperiment extends App {
     isSplit: Boolean,
     frameLength: Int,
     featureType: Int,
-    song: String = "",
+    artist: String = "",
+    title: String = "",
     level: Int = -1,
     region: Int = -1)
 
+  object InfoOrdering extends Ordering[FrameSetInfo] {
+    def compare(lhs: FrameSetInfo, rhs: FrameSetInfo) = {
+       if (lhs.foldIndex != rhs.foldIndex) {
+         lhs.foldIndex compare rhs.foldIndex
+       } else if (lhs.isTraining != rhs.isTraining) {
+         lhs.isTraining compare rhs.isTraining
+       } else if (lhs.isSplit != rhs.isSplit) {
+         lhs.isSplit compare rhs.isSplit
+       } else if (lhs.isSplit != rhs.isSplit) {
+         lhs.isSplit compare rhs.isSplit
+       } else if (lhs.frameLength != rhs.frameLength) {
+         lhs.frameLength compare rhs.frameLength
+       } else if (lhs.featureType != rhs.featureType) {
+         lhs.featureType compare rhs.featureType
+       } else if (lhs.artist != rhs.artist) {
+         lhs.artist compare rhs.artist
+       } else if (lhs.title != rhs.title) {
+         lhs.title compare rhs.title
+       } else if (lhs.level != rhs.level) {
+         lhs.level compare rhs.level
+       } else {
+         lhs.region compare rhs.region
+       }
+    }
+  }
+
   // Make these classes serializable for JSON
-  /*object Protocols {
+  /*object Protocols {frame
     import dispatch.json._
     implicit object SplitFormat extends Format[FeatureSplit] {
       def writes(method: FeatureSplit) = {
@@ -309,17 +336,78 @@ object FinalExperiment extends App {
     clusterer.buildClusterer(xs)
     clusterer
   }
+  
+  def combineHistograms(histograms: GenSeq[(FrameSetInfo, Map[Int, Double])],
+      level: Int) = {
+    // Make the attributes
+    val localSplitInfo = splitInfo(histograms(0)._1.isSplit)
+    val numAttributes =
+      localSplitInfo.featureLengths.size *
+        bagCountByFrameLength.sum
+    val attributes = new FastVector(numAttributes + 1)
+    for (
+      segmentIndex <- 0 until maxFrameLength;
+      featureType <- localSplitInfo.featureNames;
+      l <- 0 to level;
+      region <- 0 until (1<<l);
+      clusterIndex <- 0 until bagCountByFrameLength(segmentIndex)
+    ) yield {
+      attributes.addElement(
+        new Attribute("segment%02d-%s-level%02d-region%02d-C%02d" 
+            format 
+            (segmentIndex + 1,
+                featureType,
+                l,
+                region,
+                clusterIndex)))
+    }
+    val possibleBeatlesVals = new FastVector(2)
+    possibleBeatlesVals.addElement("T")
+    possibleBeatlesVals.addElement("F")
+    val beatlesAttrib = new Attribute("isBeatles", possibleBeatlesVals)
+    attributes.addElement(beatlesAttrib)
+    
+    val songArtistTitles = (for ((info, _) <- histograms) yield
+        (info.artist, info.title))
+        .toSet
 
-  // Save centroids
+    // Build the instances
+    val unifiedHistograms = new Instances("histograms", attributes, 0)
+    unifiedHistograms.setClass(beatlesAttrib)
+    for ((artist, title) <- songArtistTitles) {
+      val instance = new Instance(numAttributes + 1)
+      instance.setDataset(unifiedHistograms)
+      val songHistograms = histograms.filter(record => 
+        record._1.artist == artist &&
+        record._1.title == title)
+      val concatHisto = for (
+          (info, histogram) <- songHistograms;
+          histogramLength = bagCountByFrameLength(info.frameLength-1);
+          frequency <- (0 until histogramLength)
+          .map(histogram.getOrElse(_, 0.0))
+          ) yield {
+        frequency
+      }
+        
+      for ((frequency, index) <- concatHisto.zipWithIndex) {
+        instance.setValue(index, frequency)
+      }
+      
+      instance.setValue(numAttributes, if (artist == "The Beatles") "T" else "F")
+    }
 
-  // Make clusterer from centroid file
+    unifiedHistograms
+  }
   
   // Make a histogram from a series of clusters
-  def makeHistogram(clusters: Iterable[Int]) =
-    clusters.foldLeft(Map[Int, Int]())(
+  def makeHistogram(clusters: Iterable[Int]) = {
+    val rawHisto = clusters.foldLeft(Map[Int, Int]())(
       (acc: Map[Int, Int], cluster) => {
           acc.updated(cluster, acc.getOrElse(cluster, 0) + 1)
       })
+    val total = rawHisto.map(_._2).sum
+    rawHisto.mapValues(_.toDouble/total)
+  }
 
   // Get dataset
   val songs = (new BeatlesData(songCount, 0)).trainingSet.keys
@@ -344,7 +432,7 @@ object FinalExperiment extends App {
       // Split songs with relevant information
       for (songSet <- List(training, testing)) yield {
         for (song <- songSet) yield {
-          (Util.songToShortString(song),
+          ((song.getArtistName, song.getTitle),
             for (frameLength <- 1 to maxFrameLength) yield {
               splitSong(song, frameLength)
             })
@@ -367,7 +455,7 @@ object FinalExperiment extends App {
         (isTraining, byTraining) <- Map(true -> fold(0), false -> fold(1));
         (isSplit, splitMethod) <- splitInfo;
         // Dimensions: frame length, start time -> (feature type, feature)
-        (songTitle, byFrameLength) <- byTraining;
+        ((artist, title), byFrameLength) <- byTraining;
         // Dimensions: start time -> (feature type, feature)
         (byStartTime, frameIndex) <- byFrameLength.zipWithIndex;
         // Dimensions: segment, feature type, feature
@@ -385,10 +473,7 @@ object FinalExperiment extends App {
         isTraining,
         isSplit,
         frameIndex + 1,
-        featureType,
-        songTitle,
-        level,
-        regionIndex),
+        featureType),
         convertFramesToInstances(region,
           splitInfo(isSplit).featureLengths(featureType),
           splitInfo(isSplit).featureNames(featureType)))).cache()
@@ -414,10 +499,7 @@ object FinalExperiment extends App {
       true,
       isSplit,
       frameLength,
-      featureType,
-      "",
-      -1,
-      -1),
+      featureType),
       trainClusterer(instances, bagCountByFrameLength(frameLength - 1)))
   }).collect())
 
@@ -443,37 +525,42 @@ object FinalExperiment extends App {
           info.isSplit,
           info.frameLength,
           info.featureType,
-          "",
-          -1,
-          -1), c) => c
+          _,
+          _,
+          _,
+          _), c) => c
       }
     ) yield {
+      (info,
       makeHistogram(
         (0 until region.numInstances())
-          .map(i => clusterer.clusterInstance(region.instance(i))))
+          .map(i => clusterer.clusterInstance(region.instance(i)))))
     }
   
   // Train BoF SVM classifiers
-  /*val histogramClassifers = for (
+  val histogramClassifers = for (
     foldIndex <- 0 until folds;
+    isSplit <- List(true, false);
+    level <- 0 to temporalPyramidLevels
     // Get the song titles for this fold
-    songTitles = (for ((info, _) <- songRegionTable 
+    /*songTitles = (for ((info, _) <- songRegionTable 
         if info.foldIndex == foldIndex &&
         info.isTraining == true) yield
-        info.song).collect.toSet;
-    /*isSplit <- List(true, false);
-    frameLength <- 1 to maxFrameLength;
-    featureType <- splitInfo(isSplit).featureLengths.indices;
-    matchingRegions = songRegionTable
-      .filter(record => {
-        val info = record._1
-        info.foldIndex == foldIndex &&
-          info.isSplit == isSplit &&
-          info.frameLength == frameLength &&
-          info.featureType == featureType &&
-          info.isTraining == true*/
-      })
-  ) yield { null
+        info.title)
+        .collect
+        .toSet;
+    songTitle <- songTitles*/
+      ) yield {
+    val allHistograms =
+      regionHistograms
+        .filter(record => record._1.foldIndex == foldIndex &&
+            record._1.isSplit == isSplit &&
+            record._1.level <= level)
+        .collect.sortBy(_._1)(InfoOrdering)
+    val concatedHistos = combineHistograms(allHistograms, level)
+    val classifier = new SMO
+    classifier.buildClassifier(concatedHistos)
+    (FrameSetInfo(foldIndex, true, isSplit, -1, -1, "", "", level, -1),
+        classifier)
   }
-  }*/
 }
