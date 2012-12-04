@@ -409,6 +409,21 @@ object FinalExperiment extends App {
     rawHisto.mapValues(_.toDouble/total)
   }
 
+  def serializeObjects[A, B <: java.io.Serializable]
+    (fileName: String, data: GenSeq[(A,B)]) = {
+    for ((info, thing) <- data) {
+      val baos = new ByteArrayOutputStream(1024)
+      val oos = new ObjectOutputStream(baos)
+      oos.writeObject(thing)
+      oos.flush()
+      oos.close()
+      writeStringToFile(new File(fileName + "_" + startTime + ".log"),
+        info + ":\n" + new sun.misc.BASE64Encoder().encode(baos.toByteArray) 
+        + "\n" + thing,
+        true)
+    }
+  }
+
   // Get dataset
   val songs = (new BeatlesData(songCount, 0)).trainingSet.keys
 
@@ -504,16 +519,7 @@ object FinalExperiment extends App {
   }).collect())
 
   // Serialize clusterers
-  for ((info, clusterer) <- clusterersWithInfo.value) {
-    val baos = new ByteArrayOutputStream(1024)
-    val oos = new ObjectOutputStream(baos)
-    oos.writeObject(clusterer)
-    oos.flush()
-    oos.close()
-    writeStringToFile(new File("clusterers_" + startTime + ".log"),
-      info + ":\n" + new sun.misc.BASE64Encoder().encode(baos.toByteArray) + "\n" + clusterer,
-      true)
-  }
+  serializeObjects("clusterers", clusterersWithInfo.value)
 
   // Make histograms of all regions
   val regionHistograms =
@@ -538,7 +544,7 @@ object FinalExperiment extends App {
     }
   
   // Train BoF SVM classifiers
-  val histogramClassifers = for (
+  val histogramClassifiers = for (
     foldIndex <- 0 until folds;
     isSplit <- List(true, false);
     level <- 0 to temporalPyramidLevels
@@ -563,4 +569,6 @@ object FinalExperiment extends App {
     (FrameSetInfo(foldIndex, true, isSplit, -1, -1, "", "", level, -1),
         classifier)
   }
+  
+  serializeObjects("histogram-svm", histogramClassifiers)
 }
