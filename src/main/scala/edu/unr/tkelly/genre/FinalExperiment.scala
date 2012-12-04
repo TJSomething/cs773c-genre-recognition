@@ -23,8 +23,8 @@ import org.apache.commons.io.FileUtils._
 import scala.reflect.Code
 import spark.KryoRegistrator
 import com.esotericsoftware.kryo.Kryo
-  import java.io.{ ByteArrayOutputStream, ByteArrayInputStream }
-  import java.io.{ ObjectOutputStream, ObjectInputStream }
+import java.io.{ ByteArrayOutputStream, ByteArrayInputStream }
+import java.io.{ ObjectOutputStream, ObjectInputStream }
 
 object FinalExperiment extends App {
   // Notes for types
@@ -40,8 +40,8 @@ object FinalExperiment extends App {
   val maxFrameLength = 4
   val bagCountByFrameLength = List(123, 7, 38, 100)
   val tasksPerCore = 1
-  val spatialPyramidLevels = 3
-  
+  val temporalPyramidLevels = 3
+
   // Serialization stuff
   // Splitting info
   type SplitterFunc = Seq[Frame] => Seq[Seq[FrameVector]]
@@ -49,11 +49,11 @@ object FinalExperiment extends App {
     featureLengths: List[Int], featureNames: List[String])
 
   val splitInfo =
-    Seq(
-      FeatureSplit(framePassthrough[Seq] _,
+    Map(
+      false -> FeatureSplit(framePassthrough[Seq] _,
         List(25),
         List("timbre_pitch_duration")),
-      FeatureSplit(frameSplit[Seq] _,
+      true -> FeatureSplit(frameSplit[Seq] _,
         List(12, 12, 1),
         List("timbre", "pitch", "duration")))
 
@@ -61,13 +61,14 @@ object FinalExperiment extends App {
   //  Spark dislikes nested data
   case class FrameSetInfo(
     foldIndex: Int,
-    splitMethod: FeatureSplit,
+    isTraining: Boolean,
+    isSplit: Boolean,
     frameLength: Int,
     featureType: Int,
     song: String = "",
     level: Int = -1,
     region: Int = -1)
-  
+
   // Make these classes serializable for JSON
   /*object Protocols {
     import dispatch.json._
@@ -143,7 +144,7 @@ object FinalExperiment extends App {
     }
     
   }*/
-  
+
   // Also for Kryo serialization
   class MyRegistrator extends KryoRegistrator {
     override def registerClasses(kryo: Kryo) {
@@ -153,7 +154,7 @@ object FinalExperiment extends App {
       kryo.register(classOf[FrameSetInfo])
     }
   }
-  
+
   /*case class FrameSetInfo(
     foldIndex: Int,
     splitMethod: FeatureSplit,
@@ -162,7 +163,7 @@ object FinalExperiment extends App {
     song: String = "",
     level: Int = -1,
     region: Int = -1)*/
-  
+
   // Spark properties
   System.setProperty("spark.serializer", "spark.KryoSerializer")
   System.setProperty("spark.kryo.registrator", "edu.unr.tkelly.genre.FinalExperiment$MyRegistrator")
@@ -283,7 +284,21 @@ object FinalExperiment extends App {
     instances
   }
 
-  // Cluster a song with a several clusterers
+  // Split a sequence into approximately even divisions
+  def groupedEvenly[A](xs: Iterable[A], divisions: Int) =
+    // We need to know the indices
+    xs.zipWithIndex
+      // Make a map for each grouping
+      .groupBy(x => (x._2 / (xs.size.toDouble / divisions)).toInt)
+      // Convert map for
+      .toList
+      // Sorting
+      .sortBy(_._1)
+      // Remove indices and group numbers
+      .map(m => m._2
+        .map(_._1))
+
+  // Cluster a song with several clusterers
 
   // Make a clusterer from a collection of frames
   def trainClusterer(xs: Instances, bagCount: Int) = {
@@ -295,11 +310,16 @@ object FinalExperiment extends App {
     clusterer
   }
 
-  // Split a song into clusters
-
   // Save centroids
 
   // Make clusterer from centroid file
+  
+  // Make a histogram from a series of clusters
+  def makeHistogram(clusters: Iterable[Int]) =
+    clusters.foldLeft(Map[Int, Int]())(
+      (acc: Map[Int, Int], cluster) => {
+          acc.updated(cluster, acc.getOrElse(cluster, 0) + 1)
+      })
 
   // Get dataset
   val songs = (new BeatlesData(songCount, 0)).trainingSet.keys
@@ -332,99 +352,128 @@ object FinalExperiment extends App {
       }
     }).zipWithIndex
   // Note that the dimensions on this are:
-  // fold, training+testing, song, title*(start time -> frame)
+  // fold, training+testing, song, frame length,
+  //    title*(start time -> (feature type, feature))
+
+  // Denormalize and broadcast the data
+  val songRegionTable =
+    sc.parallelize(
+      for (
+        // Dimensions: training+testing, song, 
+        //    title*(start time -> (frame length, feature type, feature))
+        (fold, foldIndex) <- splitSongSets;
+        // Dimensions: song, 
+        //    title*(frame length, start time -> (feature type, feature))
+        (isTraining, byTraining) <- Map(true -> fold(0), false -> fold(1));
+        (isSplit, splitMethod) <- splitInfo;
+        // Dimensions: frame length, start time -> (feature type, feature)
+        (songTitle, byFrameLength) <- byTraining;
+        // Dimensions: start time -> (feature type, feature)
+        (byStartTime, frameIndex) <- byFrameLength.zipWithIndex;
+        // Dimensions: segment, feature type, feature
+        bySegment = byStartTime.values;
+        // Dimensions: feature type, segment, feature
+        byFeatureType = bySegment.transpose;
+        // Dimensions: segment, feature
+        (song, featureType) <- byFeatureType.zipWithIndex;
+        level <- 0 to temporalPyramidLevels;
+        // region, segment, feature
+        regions = groupedEvenly(song, 1 << level);
+        // segment, feature
+        (region, regionIndex) <- regions.zipWithIndex
+      ) yield (FrameSetInfo(foldIndex,
+        isTraining,
+        isSplit,
+        frameIndex + 1,
+        featureType,
+        songTitle,
+        level,
+        regionIndex),
+        convertFramesToInstances(region,
+          splitInfo(isSplit).featureLengths(featureType),
+          splitInfo(isSplit).featureNames(featureType)))).cache()
 
   // Cluster instances
-  val clusterersWithInfo = (for (
-    (List(training, testing), foldIndex) <- sc.parallelize(splitSongSets);
-    // Note that the dimensions of training and testing are:
-    //  song, title*(frame length, time -> frames)
-
-    // For combined or separated features (duration, timbre, pitch)
-    splitMethod <- splitInfo;
-    // Dimensions: frame length, song, frames, segments, features
-    
-    framesByFrameLengthThenSong = 
-      (training map (song => song._2 map {_.values})).transpose.toSeq.sortBy(_.head.head.size);
-    
-    // Dimensions: frame length, frame, segment, feature
-    framesByFrameLength = framesByFrameLengthThenSong map {_.flatten};
-    
-    // Format frames for clustering
-    frameVectorsByFrameLength = (framesByFrameLength map { frames: Iterable[Frame] =>
-      (splitMethod.splitter(shuffle(frames.toSeq).toArray(manifest[Frame])) map {
-        _ toArray
-      }) toArray
-    }).toArray;
-    // Note that the dimensions of frameVectorsByFrameLength are:
-    //  frame length, type of feature vector, frame, feature
-
-    // Convert frame vectors to Weka instances
-    instancesByFrameLength_Type = for (frameVectorsByFeatureType <- frameVectorsByFrameLength) yield {
-      for ((frameVectors, typeIndex) <- frameVectorsByFeatureType.zipWithIndex) yield {
-        convertFramesToInstances(frameVectors,
-          splitMethod.featureLengths(typeIndex),
-          splitMethod.featureNames(typeIndex))
-      }
-    };
-    (instancesByType, frameIndex) <- instancesByFrameLength_Type.zipWithIndex.par;
-    (instances, typeIndex) <- instancesByType.toSeq.zipWithIndex
+  val clusterersWithInfo = sc.broadcast((for (
+    foldIndex <- sc.parallelize(0 until folds);
+    isSplit <- List(true, false);
+    frameLength <- 1 to maxFrameLength;
+    featureType <- splitInfo(isSplit).featureLengths.indices;
+    matchingRegions = songRegionTable
+      .filter(record => {
+        val info = record._1
+        info.foldIndex == foldIndex &&
+          info.isSplit == isSplit &&
+          info.frameLength == frameLength &&
+          info.featureType == featureType &&
+          info.isTraining == true
+      })
   ) yield {
-    /*println("Frame Length Index: " + frameIndex)
-    println("Actual frame length = " + (instances.numAttributes/splitMethod.featureLengths(typeIndex)))*/
-    (FrameSetInfo(
-      foldIndex,
-      splitMethod,
-      frameIndex + 1,
-      typeIndex),
-      trainClusterer(instances, bagCountByFrameLength(frameIndex)))
-  }).collect
+    val instances = matchingRegions.map(_._2).reduce(Instances.mergeInstances)
+    (FrameSetInfo(foldIndex,
+      true,
+      isSplit,
+      frameLength,
+      featureType,
+      "",
+      -1,
+      -1),
+      trainClusterer(instances, bagCountByFrameLength(frameLength - 1)))
+  }).collect())
 
   // Serialize clusterers
-  for ((info, clusterer) <- clusterersWithInfo) {
-	    val baos = new ByteArrayOutputStream(1024)
-	    val oos = new ObjectOutputStream(baos)
-	    oos.writeObject(clusterer)
-	    oos.flush()
-	    oos.close()
-	  writeStringToFile(new File("clusterers_" + startTime + ".log"), 
-	      info + ":\n" + new sun.misc.BASE64Encoder().encode(baos.toByteArray) + "\n" + clusterer,
-	      true)
+  for ((info, clusterer) <- clusterersWithInfo.value) {
+    val baos = new ByteArrayOutputStream(1024)
+    val oos = new ObjectOutputStream(baos)
+    oos.writeObject(clusterer)
+    oos.flush()
+    oos.close()
+    writeStringToFile(new File("clusterers_" + startTime + ".log"),
+      info + ":\n" + new sun.misc.BASE64Encoder().encode(baos.toByteArray) + "\n" + clusterer,
+      true)
   }
 
-  /*case class FrameSetInfo(
-    foldIndex: Int,
-    splitMethod: FeatureSplit,
-    frameLength: Int,
-    featureType: Int,
-    song: String = "",
-    level: Int = -1,
-    region: Int = -1)*/
-  // fold, training+testing, song, title*(start time -> frame)
-  
-  // Split instances for classification
-  /*for ((List(training, testing), foldIndex) <- sc.parallelize(splitSongSets);
-    // Note that the dimensions of training and testing are:
-    //  song, title*(frame length, time -> frames)
-
-    // For combined or separated features (duration, timbre, pitch)
-    splitMethod <- splitInfo;
-    
-    // Dimensions: frame length, song, frames, segments, features
-    framesByFrameLengthThenSong = 
-      (training map (song => song._2 map {_.values})).transpose.toSeq.sortBy(_.head.head.size);
-
-    // Convert frame vectors to Weka instances
-    instancesByFrameLength_Type = for (frameVectorsByFeatureType <- frameVectorsByFrameLength) yield {
-      for ((frameVectors, typeIndex) <- frameVectorsByFeatureType.zipWithIndex) yield {
-        convertFramesToInstances(frameVectors,
-          splitMethod.featureLengths(typeIndex),
-          splitMethod.featureNames(typeIndex))
+  // Make histograms of all regions
+  val regionHistograms =
+    for (
+      (info, region) <- songRegionTable;
+      clusterer <- clusterersWithInfo.value.collectFirst {
+        case (FrameSetInfo(info.foldIndex,
+          true,
+          info.isSplit,
+          info.frameLength,
+          info.featureType,
+          "",
+          -1,
+          -1), c) => c
       }
-    };
-    (instancesByType, frameIndex) <- instancesByFrameLength_Type.zipWithIndex.par;
-    (instances, typeIndex) <- instancesByType.toSeq.zipWithIndex)*/
+    ) yield {
+      makeHistogram(
+        (0 until region.numInstances())
+          .map(i => clusterer.clusterInstance(region.instance(i))))
+    }
   
-  // Test plain BoF
-  // Test temporal pyramid BoF
+  // Train BoF SVM classifiers
+  /*val histogramClassifers = for (
+    foldIndex <- 0 until folds;
+    // Get the song titles for this fold
+    songTitles = (for ((info, _) <- songRegionTable 
+        if info.foldIndex == foldIndex &&
+        info.isTraining == true) yield
+        info.song).collect.toSet;
+    /*isSplit <- List(true, false);
+    frameLength <- 1 to maxFrameLength;
+    featureType <- splitInfo(isSplit).featureLengths.indices;
+    matchingRegions = songRegionTable
+      .filter(record => {
+        val info = record._1
+        info.foldIndex == foldIndex &&
+          info.isSplit == isSplit &&
+          info.frameLength == frameLength &&
+          info.featureType == featureType &&
+          info.isTraining == true*/
+      })
+  ) yield { null
+  }
+  }*/
 }
