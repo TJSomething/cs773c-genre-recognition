@@ -35,8 +35,8 @@ object FinalExperiment extends App {
   type Time = Double
 
   // Some parameters
-  val folds = 3
-  val songCount = 6
+  val folds = 10
+  val songCount = 200
   val maxFrameLength = 1
   val bagCountByFrameLength = List(123, 7, 38, 100)
   val tasksPerCore = 1
@@ -498,6 +498,7 @@ object FinalExperiment extends App {
           splitInfo(isSplit).featureLengths(featureType),
           splitInfo(isSplit).featureNames(featureType))))
 
+  println("Clustering...")
   // Cluster instances
   val clusterersWithInfo = sc.broadcast((for (
     foldIndex <- sc.parallelize(0 until folds);
@@ -520,16 +521,20 @@ object FinalExperiment extends App {
          index <- 0 until subset._2.numInstances()) {
       instances.add(subset._2.instance(index))
     }
-    (FrameSetInfo(foldIndex,
+    val result = (FrameSetInfo(foldIndex,
       true,
       isSplit,
       frameLength,
       featureType),
       trainClusterer(instances, bagCountByFrameLength(frameLength - 1)))
+    println("Clustered: " + result._1)
+    result
   }).collect())
 
   // Serialize clusterers
   serializeObjects("clusterers", clusterersWithInfo.value)
+  
+  println("Building histograms...")
 
   // Make histograms of all regions
   val regionHistograms =
@@ -552,6 +557,8 @@ object FinalExperiment extends App {
         (0 until region.numInstances())
           .map(i => clusterer.clusterInstance(region.instance(i)))))
     })
+  
+  println("Training classifiers....")
   
   // Train BoF SVM classifiers
   val histogramClassifiers = (for (
@@ -578,15 +585,13 @@ object FinalExperiment extends App {
     val classifier = new SMO
     classifier.setRandomSeed(Random.nextInt)
     classifier.buildClassifier(concatedHistos)
-    (FrameSetInfo(foldIndex, true, isSplit, -1, -1, "", "", level, -1),
+    val info = FrameSetInfo(foldIndex, true, isSplit, -1, -1, "", "", level, -1)
+    println("Classifier built: " + info)
+    (info,
         classifier)
   })
   
   serializeObjects("histogram-svm", histogramClassifiers)
-  
-  for ((info, classifier) <- histogramClassifiers)
-	    println(info + ": " + 
-        classifier.attributeNames()(0)(1).size)
   
   // Evaluate classifiers
   val results = (for (
@@ -622,11 +627,12 @@ object FinalExperiment extends App {
       for ((artist, title) <- artistTitles) yield {
         artist == "The Beatles"
       }
-    val beatlesClassNumber =
-      actualClasses.zip(predictedNumericClasses)
+    val beatlesClassNumber = 1.0
+      // This code was used to find the above number
+      /*actualClasses.zip(predictedNumericClasses)
            .filter(_._1 == true)
            .groupBy(identity)
-           .maxBy(_._2.size)._1._2
+           .maxBy(_._2.size)._1._2*/
     val predictedClasses = predictedNumericClasses.map(_ == beatlesClassNumber)
     
     for (((artist, title), actual, predicted) <- 
