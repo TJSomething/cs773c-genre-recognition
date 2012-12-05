@@ -106,8 +106,8 @@ object FasterFinal extends App {
   args.toList match {
     case List("-d", songCount) => download(songCount.toInt)
     case List("-c", splitNum, maxSplit) => {
-      val songRegionTable = deserializeObject("music",
-        manifest[Array[(FrameSetInfo, Array[FrameVector])]])
+      val songRegionTable = denormalize(deserializeObject("music",
+        manifest[Array[((String, String), Array[(Double, Array[Double])])]]))
       val paramsSet = for (
         foldIndex <- 0 until folds;
         isSplit <- List(true, false);
@@ -128,19 +128,21 @@ object FasterFinal extends App {
 
       // Wait until it's ready
       val startTime = Platform.currentTime
-      while (getFileCount() < folds * 2 * maxFrameLength) {
+      while (getFileCount() < folds * 4 * maxFrameLength) {
         println(getFileCount() + "/" + (folds * 2 * maxFrameLength) +
           " complete")
-        val filesLeft = folds * 2 * maxFrameLength - getFileCount()
+        val filesLeft = folds * 4 * maxFrameLength - getFileCount()
         val timePassed = Platform.currentTime - startTime
         val rate = getFileCount().toDouble / timePassed
-        val secondsLeft = filesLeft.toDouble * rate / 1000.0
-        println("Estimated time left: " + (secondsLeft / 3600.0) +
-          (secondsLeft / 60.0 % 60.0) + ":" + (secondsLeft % 60.0))
+        val secondsLeft = filesLeft.toDouble / rate / 1000.0
+        println(secondsLeft)
+        println("Estimated time left: %02d:%02d:%02d" format 
+            ((secondsLeft / 3600.0).toInt, (secondsLeft / 60.0 % 60.0).toInt,
+                (secondsLeft % 60.0).toInt))
         Thread.sleep(60000)
       }
-      val songRegionTable = deserializeObject("music",
-        manifest[Array[(FrameSetInfo, Array[FrameVector])]])
+      val songRegionTable = denormalize(deserializeObject("music",
+        manifest[Array[((String, String), Array[(Double, Array[Double])])]]))
       histograms(songRegionTable)
     }
     case List("-s", splitNum, maxSplit) =>
@@ -215,6 +217,21 @@ object FasterFinal extends App {
     builder += sliceFrames(12, 24)
     builder += sliceFrames(24, 25)
     builder.result
+  }
+  
+  def extractSong(s: Song) = {
+      ((s.getArtistName, s.getTitle),
+          (for (
+        segment <- s.getAnalysis.getSegments.toArray(manifest[Segment])
+      ) yield {
+        (segment.getStart(),
+            (for (featureIndex <- 0 until 25) yield if (featureIndex < 12)
+              segment.getTimbre()(featureIndex)
+            else if (featureIndex < 24)
+              segment.getPitches()(featureIndex - 12)
+            else
+              segment.getDuration).toArray(manifest[Double]))
+      }).toArray)
   }
 
   // Turns song into an array of frames with attached times
@@ -328,10 +345,10 @@ object FasterFinal extends App {
         record._1.artist == artist &&
           record._1.title == title)
       val concatHisto = for (
-        (info, histogram) <- songHistograms;
+        (info, histogram) <- songHistograms.toArray;
         histogramLength = bagCountByFrameLength(info.frameLength - 1);
         frequency <- (0 until histogramLength)
-          .map(histogram.getOrElse(_, 0.0))
+          .map(histogram.toMap.getOrElse(_, 0.0))
       ) yield {
         frequency
       }
@@ -422,7 +439,7 @@ object FasterFinal extends App {
     val regex = regexString.r
 
     // Get all files in current directory
-    val allFiles = (new File("")).listFiles().map(_.getName())
+    val allFiles = (new File(".")).listFiles().map(_.getName())
 
     // The ones that match are deserialized
     (for (filename <- allFiles) yield {
@@ -444,11 +461,16 @@ object FasterFinal extends App {
   def download(songCount: Int) = {
     // Get dataset
     val songs = (new BeatlesData(songCount, 0)).trainingSet.keys
+      .map(extractSong).toArray
 
     // Log dataset
     writeStringToFile(new File("songs.txt"),
-      songs.map(Util.songToShortString).mkString("\n"))
+      songs.map(song => song._1._1 + " - " + song._1._2).mkString("\n"))
+        
+    serializeObject("music", songs)
+  }
 
+  def denormalize(songs:  Array[((String, String), Array[(Double, Array[Double])])]) = {
     // Split dataset for cross-validation
     val testSetSize = songs.size / folds
     val songSets =
@@ -464,23 +486,26 @@ object FasterFinal extends App {
       // For every cross-validation,
       (for ((training, testing) <- songSets) yield {
         // Split songs with relevant information
-        for (songSet <- List(training, testing)) yield {
-          for (song <- songSet) yield {
-            ((song.getArtistName, song.getTitle),
-              for (frameLength <- 1 to maxFrameLength) yield {
-                splitSong(song, frameLength)
-              })
-          }
-        }
-      }).zipWithIndex
+        (for (songSet <- List(training, testing)) yield {
+          (for (song <- songSet) yield {
+            ((song._1._1, song._1._2),
+              (for (frameLength <- 1 to maxFrameLength) yield {
+                    SortedMap[Time, Frame]() ++
+      (for (
+        frame <- song._2.iterator.sliding(frameLength)
+      ) yield {
+        (frame(0)._1, frame.map(_._2).toArray)
+      })
+              }).toArray)
+          }).toArray
+        }).toArray
+      }).zipWithIndex.toArray
     // Note that the dimensions on this are:
     // fold, training+testing, song, frame length,
     //    title*(start time -> (segment, feature))
-
-    // Denormalize and broadcast the data
-
+      
+    // Denormalize the data
     println("Denormalizing...")
-    val songRegionTable =
       (for (
         // Dimensions: training+testing, song, 
         //    title*(start time -> (frame length, segment, feature))
@@ -514,9 +539,6 @@ object FasterFinal extends App {
         level,
         regionIndex),
         region.toArray)).toArray
-
-    println("Serializing...")
-    serializeObject("music", songRegionTable)
   }
 
   def convertResults(regions: Array[(FrameSetInfo, Array[FrameVector])]) = {
@@ -581,7 +603,7 @@ object FasterFinal extends App {
         (info,
           makeHistogram(
             (0 until region.numInstances())
-              .map(i => clusterer.clusterInstance(region.instance(i)))))
+              .map(i => clusterer.clusterInstance(region.instance(i)))).toArray)
       }).toArray
     serializeObject("histograms", histograms)
   }
@@ -590,11 +612,13 @@ object FasterFinal extends App {
   def svmClassifiers(foldIndex: Int, isSplit: Boolean, level: Int) = {
     val trainingHistograms =
       deserializeObject("histograms",
-        manifest[Array[(FrameSetInfo, Map[Int, Double])]])
+        manifest[Array[(FrameSetInfo, Array[(Int, Double)])]])
         .filter(record => record._1.foldIndex == foldIndex &&
           record._1.isSplit == isSplit &&
           record._1.level <= level &&
-          record._1.isTraining == true).sortBy(_._1)(InfoOrdering)
+          record._1.isTraining == true)
+          .sortBy(_._1)(InfoOrdering)
+          .map(record => (record._1, record._2.toMap))
     val (artistTitles, concatedHistos) = combineHistograms(trainingHistograms, level)
 
     val classifier = new SMO
@@ -617,11 +641,12 @@ object FasterFinal extends App {
     ) yield {
       val testHistograms =
         deserializeObject("histograms",
-          manifest[Array[(FrameSetInfo, Map[Int, Double])]])
+          manifest[Array[(FrameSetInfo, Array[(Int, Double)])]])
           .filter(record => record._1.foldIndex == foldIndex &&
             record._1.isSplit == isSplit &&
             record._1.level <= level &&
             record._1.isTraining == false).sortBy(_._1)(InfoOrdering)
+          .map(record => (record._1, record._2.toMap))
       val (artistTitles, concatedHistos) =
         combineHistograms(testHistograms, level)
 
