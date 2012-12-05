@@ -108,7 +108,7 @@ object FinalExperiment extends App {
         }
       }
       def reads(value: JsValue) =
-        value match {
+        value match {env JAVA_OPTS="-Xmx3g" sbt "run local[4]"
           case JsString("combined") => splitInfo(0)
           case JsString("separate") => splitInfo(1)
           case _ => throw new RuntimeException("Unexpected splitter method")
@@ -194,6 +194,8 @@ object FinalExperiment extends App {
   // Spark properties
   System.setProperty("spark.serializer", "spark.KryoSerializer")
   System.setProperty("spark.kryo.registrator", "edu.unr.tkelly.genre.FinalExperiment$MyRegistrator")
+  System.setProperty("spark.kryoserializer.buffer.mb", "6000")
+  System.setProperty("spark.rdd.compress", "true")
 
   // Parse arguments
   val jobName = "MusicClassification"
@@ -459,13 +461,15 @@ object FinalExperiment extends App {
   // Note that the dimensions on this are:
   // fold, training+testing, song, frame length,
   //    title*(start time -> (segment, feature))
+    
+  println("Denormalizing...")
 
   // Denormalize and broadcast the data
   val songRegionTable =
-    sc.broadcast(for (
+    sc.broadcast((for (
         // Dimensions: training+testing, song, 
         //    title*(start time -> (frame length, segment, feature))
-        (fold, foldIndex) <- splitSongSets;
+        (fold, foldIndex) <- splitSongSets.par;
         // Dimensions: song, 
         //    title*(frame length, start time -> (segment, feature))
         (isTraining, byTraining) <- Map(true -> fold(0), false -> fold(1));
@@ -496,7 +500,7 @@ object FinalExperiment extends App {
         regionIndex),
         convertFramesToInstances(region,
           splitInfo(isSplit).featureLengths(featureType),
-          splitInfo(isSplit).featureNames(featureType))))
+          splitInfo(isSplit).featureNames(featureType)))).toArray)
 
   println("Clustering...")
   // Cluster instances
@@ -562,7 +566,7 @@ object FinalExperiment extends App {
   
   // Train BoF SVM classifiers
   val histogramClassifiers = (for (
-    foldIndex <- (0 until folds);
+    foldIndex <- (0 until folds).par;
     isSplit <- List(true, false);
     level <- 0 to temporalPyramidLevels
     // Get the song titles for this fold
@@ -589,7 +593,7 @@ object FinalExperiment extends App {
     println("Classifier built: " + info)
     (info,
         classifier)
-  })
+  }).toArray
   
   serializeObjects("histogram-svm", histogramClassifiers)
   

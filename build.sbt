@@ -21,7 +21,7 @@ name := "cs773c-genre-recognition"
 
 scalaVersion := "2.9.2"
 
-mainClass in assembly := Some("edu.unr.tkelly.genre.FinalExperiment")
+mainClass in assembly := Some("edu.unr.tkelly.genre.FasterFinal")
 
 jarName in assembly := "cs773c-final.jar"
 
