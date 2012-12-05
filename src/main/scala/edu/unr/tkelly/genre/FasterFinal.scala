@@ -106,19 +106,21 @@ object FasterFinal extends App {
   args.toList match {
     case List("-d", songCount) => download(songCount.toInt)
     case List("-c", splitNum, maxSplit) => {
+      val songRegionTable = deserializeObject("music",
+        manifest[Array[(FrameSetInfo, Array[FrameVector])]])
       val paramsSet = for (
         foldIndex <- 0 until folds;
         isSplit <- List(true, false);
         frameLength <- 1 to maxFrameLength
       ) yield (foldIndex, isSplit, frameLength)
-      for (params <- groupedEvenly(paramsSet, maxSplit.toInt)(splitNum.toInt))
-        cluster(params._1, params._2, params._3)
+      for (params <- groupedEvenly(paramsSet, maxSplit.toInt)(splitNum.toInt).par)
+        cluster(songRegionTable, params._1, params._2, params._3)
     }
     case List("-h") => {
       val regexString = ("^" + filePrefix + "_FrameSetInfo\\(.*\\)\\." +
         "cluster$")
       def getFileCount() =
-        (new File(""))
+        (new File("."))
           .listFiles()
           .map(_.getName())
           .filter(filename => filename.matches(regexString))
@@ -137,7 +139,9 @@ object FasterFinal extends App {
           (secondsLeft / 60.0 % 60.0) + ":" + (secondsLeft % 60.0))
         Thread.sleep(60000)
       }
-      histograms()
+      val songRegionTable = deserializeObject("music",
+        manifest[Array[(FrameSetInfo, Array[FrameVector])]])
+      histograms(songRegionTable)
     }
     case List("-s", splitNum, maxSplit) =>
       val paramsSet = for (
@@ -145,13 +149,13 @@ object FasterFinal extends App {
         isSplit <- List(true, false);
         level <- 1 to temporalPyramidLevels
       ) yield (foldIndex, isSplit, level)
-      for (params <- groupedEvenly(paramsSet, maxSplit.toInt)(splitNum.toInt))
+      for (params <- groupedEvenly(paramsSet, maxSplit.toInt)(splitNum.toInt).par)
         svmClassifiers(params._1, params._2, params._3)
     case List("-e") => {
       val regexString = ("^" + filePrefix + "_FrameSetInfo\\(.*\\)\\." +
         "svm$")
       def getFileCount() =
-        (new File(""))
+        (new File("."))
           .listFiles()
           .map(_.getName())
           .filter(filename => filename.matches(regexString))
@@ -474,6 +478,8 @@ object FasterFinal extends App {
     //    title*(start time -> (segment, feature))
 
     // Denormalize and broadcast the data
+
+    println("Denormalizing...")
     val songRegionTable =
       (for (
         // Dimensions: training+testing, song, 
@@ -507,28 +513,33 @@ object FasterFinal extends App {
         title,
         level,
         regionIndex),
-        convertFramesToInstances(region,
-          splitInfo(isSplit).featureLengths(featureType),
-          splitInfo(isSplit).featureNames(featureType)))).toArray
+        region.toArray)).toArray
 
+    println("Serializing...")
     serializeObject("music", songRegionTable)
   }
 
+  def convertResults(regions: Array[(FrameSetInfo, Array[FrameVector])]) = {
+    for ((info, region) <- regions) yield (info, convertFramesToInstances(region,
+      splitInfo(info.isSplit).featureLengths(info.featureType),
+      splitInfo(info.isSplit).featureNames(info.featureType)))
+  }
+
   // Cluster instances
-  def cluster(foldIndex: Int, isSplit: Boolean, frameLength: Int) = {
-    val songRegionTable = deserializeObject("music",
-      manifest[Array[(FrameSetInfo, Instances)]])
+  def cluster(songRegionTable: Array[(FrameSetInfo, Array[FrameVector])],
+    foldIndex: Int, isSplit: Boolean, frameLength: Int) = {
     for (featureType <- splitInfo(isSplit).featureLengths.indices) yield {
-      val matchingRegions = songRegionTable.filter(
-        record => {
-          val info = record._1
-          info.foldIndex == foldIndex &&
-            info.isSplit == isSplit &&
-            info.frameLength == frameLength &&
-            info.featureType == featureType &&
-            info.isTraining == true &&
-            info.level == 0
-        })
+      val matchingRegions = convertResults(
+        songRegionTable.filter(
+          record => {
+            val info = record._1
+            info.foldIndex == foldIndex &&
+              info.isSplit == isSplit &&
+              info.frameLength == frameLength &&
+              info.featureType == featureType &&
+              info.isTraining == true &&
+              info.level == 0
+          }))
       val instances = new Instances(matchingRegions(0)._2, 0)
       for (
         subset <- matchingRegions;
@@ -548,15 +559,13 @@ object FasterFinal extends App {
   }
 
   // Make histograms of all regions
-  def histograms() = {
-    val songRegionTable = deserializeObject("music",
-      manifest[Array[(FrameSetInfo, Instances)]])
+  def histograms(songRegionTable: Array[(FrameSetInfo, Array[FrameVector])]) = {
     val clusterersWithInfo =
       deserializeMatchingObjects("cluster", None, None, None, None, None, None,
         None, None, None, manifest[SimpleKMeans])
     val histograms =
       (for (
-        (info, region) <- songRegionTable.par;
+        (info, region) <- convertResults(songRegionTable).par;
         clusterer <- clusterersWithInfo.collectFirst {
           case (FrameSetInfo(info.foldIndex,
             true,
