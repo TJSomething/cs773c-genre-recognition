@@ -422,7 +422,7 @@ object FinalExperiment extends App {
       writeStringToFile(new File(fileName + "_" + startTime + ".log"),
         info + ":\n" + new sun.misc.BASE64Encoder().encode(baos.toByteArray) 
         + "\n" + thing,
-        true)
+        "UTF-8")
     }
   }
 

@@ -1,18 +1,32 @@
 import AssemblyKeys._
-
+ 
 assemblySettings
 
-mainClass in assembly := Some("edu.unr.tkelly.genre.Chart")
+mergeStrategy in assembly <<= (mergeStrategy in assembly) { (old) =>
+  {
+    case PathList("javax", "servlet", xs @ _*) => MergeStrategy.first
+    case PathList("org", "apache", "jasper", xs @ _*) => MergeStrategy.first
+    case PathList("org", "apache", "commons", xs @ _*) => MergeStrategy.first
+    case PathList("org", "objectweb", "asm", xs @ _*) => MergeStrategy.first
+    case "application.conf" => MergeStrategy.concat
+    case "unwanted.txt"     => MergeStrategy.discard
+    case "about.html"     => MergeStrategy.discard
+    case x => old(x)
+  }
+}
 
-
+net.virtualvoid.sbt.graph.Plugin.graphSettings
 
 name := "cs773c-genre-recognition"
 
 scalaVersion := "2.9.2"
 
+mainClass in assembly := Some("edu.unr.tkelly.genre.FinalExperiment")
+
+jarName in assembly := "cs773c-final.jar"
+
 resolvers ++= Seq(
-  "Typesafe Repository" at "http://repo.typesafe.com/typesafe/releases/",
-  "Spray Repository" at "http://repo.spray.cc/")
+  "Typesafe Repository" at "http://repo.typesafe.com/typesafe/releases/")
 
 libraryDependencies ++= Seq(
       "com.googlecode.jen-api" % "jen-api" % "4.x.p",
@@ -23,12 +37,11 @@ libraryDependencies ++= Seq(
         ExclusionRule(organization = "com.sun.jmx"),
         ExclusionRule(organization = "javax.jms")
       ),
-      "commons-lang" % "commons-lang" % "2.4",
-      "commons-cli" % "commons-cli" % "1.1",
       "commons-io" % "commons-io" % "2.4",
       "nz.ac.waikato.cms.weka" % "weka-stable" % "3.6.6" withSources(),
-      "org.scalaz" %% "scalaz-core" % "6.0.4",
-      "org.spark-project" %% "spark-core" % "0.6.0"
+      "org.scalaz" %% "scalaz-core" % "6.0.4",  
+      "org.spark-project" %% "spark-core" % "0.6.0" 
 )
 
 scalacOptions ++= Seq("-unchecked", "-deprecation")
+
