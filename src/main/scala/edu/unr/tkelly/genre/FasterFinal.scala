@@ -23,6 +23,7 @@ import org.apache.commons.io.FileUtils._
 import scala.reflect.Code
 import java.io.{ ByteArrayOutputStream, ByteArrayInputStream }
 import java.io._
+import scala.compat.Platform
 
 object FasterFinal extends App {
   // Notes for types
@@ -105,22 +106,72 @@ object FasterFinal extends App {
   args.toList match {
     case List("-d", songCount) => download(songCount.toInt)
     case List("-c", splitNum, maxSplit) => {
-      val paramsSet = for (foldIndex <- 0 until folds;
-           isSplit <- List(true,false);
-           frameLength <- 1 to maxFrameLength) yield
-           (foldIndex, isSplit, frameLength)
+      val paramsSet = for (
+        foldIndex <- 0 until folds;
+        isSplit <- List(true, false);
+        frameLength <- 1 to maxFrameLength
+      ) yield (foldIndex, isSplit, frameLength)
       for (params <- groupedEvenly(paramsSet, maxSplit.toInt)(splitNum.toInt))
-    	  cluster(params._1, params._2, params._3)
+        cluster(params._1, params._2, params._3)
     }
-    case List("-h") => histograms()
+    case List("-h") => {
+      val regexString = ("^" + filePrefix + "_FrameSetInfo\\(.*\\)\\." +
+        "cluster$")
+      def getFileCount() =
+        (new File(""))
+          .listFiles()
+          .map(_.getName())
+          .filter(filename => filename.matches(regexString))
+          .size
+
+      // Wait until it's ready
+      val startTime = Platform.currentTime
+      while (getFileCount() < folds * 2 * maxFrameLength) {
+        println(getFileCount() + "/" + (folds * 2 * maxFrameLength) +
+          " complete")
+        val filesLeft = folds * 2 * maxFrameLength - getFileCount()
+        val timePassed = Platform.currentTime - startTime
+        val rate = getFileCount() / timePassed
+        val secondsLeft = filesLeft.toDouble * rate / 1000.0
+        println("Estimated time left: " + (secondsLeft / 3600.0) +
+          (secondsLeft / 60.0 % 60.0) + ":" + (secondsLeft % 60.0))
+        Thread.sleep(60000)
+      }
+      histograms()
+    }
     case List("-s", splitNum, maxSplit) =>
-      val paramsSet = for (foldIndex <- 0 until folds;
-           isSplit <- List(true,false);
-           level <- 1 to temporalPyramidLevels) yield
-           (foldIndex, isSplit, level)
+      val paramsSet = for (
+        foldIndex <- 0 until folds;
+        isSplit <- List(true, false);
+        level <- 1 to temporalPyramidLevels
+      ) yield (foldIndex, isSplit, level)
       for (params <- groupedEvenly(paramsSet, maxSplit.toInt)(splitNum.toInt))
-    	  svmClassifiers(params._1, params._2, params._3)
-    case List("-e") => evaluate()
+        svmClassifiers(params._1, params._2, params._3)
+    case List("-e") => {
+      val regexString = ("^" + filePrefix + "_FrameSetInfo\\(.*\\)\\." +
+        "svm$")
+      def getFileCount() =
+        (new File(""))
+          .listFiles()
+          .map(_.getName())
+          .filter(filename => filename.matches(regexString))
+          .size
+
+      // Wait until it's ready
+      val startTime = Platform.currentTime
+      while (getFileCount() < folds * 2 * temporalPyramidLevels) {
+        println(getFileCount() + "/" + (folds * 2 * maxFrameLength) +
+          " complete")
+        val filesLeft = folds * 2 * maxFrameLength - getFileCount()
+        val timePassed = Platform.currentTime - startTime
+        val rate = getFileCount() / timePassed
+        val secondsLeft = filesLeft.toDouble * rate / 1000.0
+        println("Estimated time left: " + (secondsLeft / 3600.0) +
+          (secondsLeft / 60.0 % 60.0) + ":" + (secondsLeft % 60.0))
+        Thread.sleep(60000)
+      }
+      evaluate()
+    }
     case _ => {
       // If there are too many arguments print a help message and exit
       println(helpMessage)
@@ -313,8 +364,8 @@ object FasterFinal extends App {
     fos.flush()
     fos.close()
     writeStringToFile(
-        new File(filePrefix + "_" + key + "." + objectGroup + ".txt"),
-        value.toString)
+      new File(filePrefix + "_" + key + "." + objectGroup + ".txt"),
+      value.toString)
   }
 
   def serializeObject[A <: java.io.Serializable](objectGroup: String,
@@ -364,11 +415,7 @@ object FasterFinal extends App {
       f(frameLength) + "),(" + f(featureType) + "),(" + f(artist) + "),(" +
       f(title) + "),(" + f(level) + "),(" + f(region) + ")\\)\\." +
       objectGroup + "$")
-    val regex = ("^" + filePrefix + "_FrameSetInfo\\((" +
-      f(foldIndex) + "),(" + f(isTraining) + "),(" + f(isSplit) + "),(" +
-      f(frameLength) + "),(" + f(featureType) + "),(" + f(artist) + "),(" +
-      f(title) + "),(" + f(level) + "),(" + f(region) + ")\\)\\." +
-      objectGroup + "$").r
+    val regex = regexString.r
 
     // Get all files in current directory
     val allFiles = (new File("")).listFiles().map(_.getName())
@@ -396,7 +443,7 @@ object FasterFinal extends App {
 
     // Log dataset
     writeStringToFile(new File("songs.txt"),
-        songs.map(Util.songToShortString).mkString("\n"))
+      songs.map(Util.songToShortString).mkString("\n"))
 
     // Split dataset for cross-validation
     val testSetSize = songs.size / folds
