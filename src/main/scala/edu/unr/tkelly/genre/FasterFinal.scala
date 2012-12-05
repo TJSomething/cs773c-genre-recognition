@@ -131,7 +131,7 @@ object FasterFinal extends App {
           " complete")
         val filesLeft = folds * 2 * maxFrameLength - getFileCount()
         val timePassed = Platform.currentTime - startTime
-        val rate = getFileCount() / timePassed
+        val rate = getFileCount().toDouble / timePassed
         val secondsLeft = filesLeft.toDouble * rate / 1000.0
         println("Estimated time left: " + (secondsLeft / 3600.0) +
           (secondsLeft / 60.0 % 60.0) + ":" + (secondsLeft % 60.0))
@@ -164,7 +164,7 @@ object FasterFinal extends App {
           " complete")
         val filesLeft = folds * 2 * maxFrameLength - getFileCount()
         val timePassed = Platform.currentTime - startTime
-        val rate = getFileCount() / timePassed
+        val rate = getFileCount().toDouble / timePassed
         val secondsLeft = filesLeft.toDouble * rate / 1000.0
         println("Estimated time left: " + (secondsLeft / 3600.0) +
           (secondsLeft / 60.0 % 60.0) + ":" + (secondsLeft % 60.0))
