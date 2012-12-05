@@ -620,10 +620,15 @@ object FasterFinal extends App {
           .sortBy(_._1)(InfoOrdering)
           .map(record => (record._1, record._2.toMap))
     val (artistTitles, concatedHistos) = combineHistograms(trainingHistograms, level)
+    
+    val subsample = new Instances(concatedHistos, artistTitles.size/10)
+    for (i <- shuffle(0 until concatedHistos.numInstances).take(artistTitles.size/10)) {
+      subsample.add(subsample.instance(i))
+    }
 
     val classifier = new SMO
     classifier.setRandomSeed(Random.nextInt)
-    classifier.buildClassifier(concatedHistos)
+    classifier.buildClassifier(subsample)
     val info = FrameSetInfo(foldIndex, true, isSplit, -1, -1, "", "", level, -1)
     println("Classifier built: " + info)
     serializeObject("svm", info, classifier)
