@@ -94,21 +94,32 @@ object FasterFinal extends App {
   }
 
   // Parse arguments
-  val helpMessage = "Syntax: FasterFinal <command> <parameters>\n" +
+  val helpMessage = "Syntax: FasterFinal <command>\n" +
     "Commands:\n" +
     "-d <song count>: download data\n" +
-    "-c <fold> <isSplit> <frame length>: cluster data\n" +
+    "-c <job split number> <max jobs>: cluster data\n" +
     "-h: build histograms\n" +
-    "-s <fold> <isSplit> <level>: create SVM classifiers\n" +
+    "-s <job split number> <max jobs>: create SVM classifiers\n" +
     "-e: Evaluate\n"
 
   args.toList match {
     case List("-d", songCount) => download(songCount.toInt)
-    case List("-c", fold, isSplit, frameLength) =>
-      cluster(fold.toInt, isSplit.toBoolean, frameLength.toInt)
+    case List("-c", splitNum, maxSplit) => {
+      val paramsSet = for (foldIndex <- 0 until folds;
+           isSplit <- List(true,false);
+           frameLength <- 1 to maxFrameLength) yield
+           (foldIndex, isSplit, frameLength)
+      for (params <- groupedEvenly(paramsSet, maxSplit.toInt)(splitNum.toInt))
+    	  cluster(params._1, params._2, params._3)
+    }
     case List("-h") => histograms()
-    case List("-s", fold, isSplit, level) =>
-      svmClassifiers(fold.toInt, isSplit.toBoolean, level.toInt)
+    case List("-s", splitNum, maxSplit) =>
+      val paramsSet = for (foldIndex <- 0 until folds;
+           isSplit <- List(true,false);
+           level <- 1 to temporalPyramidLevels) yield
+           (foldIndex, isSplit, level)
+      for (params <- groupedEvenly(paramsSet, maxSplit.toInt)(splitNum.toInt))
+    	  svmClassifiers(params._1, params._2, params._3)
     case List("-e") => evaluate()
     case _ => {
       // If there are too many arguments print a help message and exit
