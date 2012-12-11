@@ -154,7 +154,7 @@ object FasterFinal extends App {
         foldIndex <- 0 until folds;
         isTraining <- List(true, false);
         isSplit <- List(true, false);
-        frameLength <- 0 until maxFrameLength;
+        frameLength <- 1 to maxFrameLength;
         featureType <- splitInfo(isSplit).featureLengths.indices
       ) yield (foldIndex, isTraining, isSplit, frameLength, featureType, songs),
         maxSplit.toInt).apply(splitNum.toInt)
@@ -372,12 +372,15 @@ object FasterFinal extends App {
           record._1.title == title)
       val concatHisto = for (
         (info, histogram) <- songHistograms.toArray;
+        _ = println(info);
         histogramLength = bagCountByFrameLength(info.frameLength - 1);
         frequency <- (0 until histogramLength)
           .map(histogram.toMap.getOrElse(_, 0.0))
       ) yield {
         frequency
       }
+      println(level)
+      
       
       println(concatHisto.size, numAttributes)
       for ((frequency, index) <- concatHisto.zipWithIndex) {
@@ -679,8 +682,8 @@ object FasterFinal extends App {
       deserializeMatchingObjects("histograms", Some(foldIndex), Some(true),
         Some(isSplit), None, None, None, None, None, None,
         manifest[Array[(FrameSetInfo, Array[(Int, Double)])]])
-        .filter(_._1.level <= level)
         .flatMap(_._2)
+        .filter(_._1.level <= level)
         .toArray
         .sortBy(_._1)(InfoOrdering)
         .map(record => (record._1, record._2.toMap))
