@@ -133,6 +133,7 @@ object FasterFinal extends App {
         manifest[Array[((String, String), Array[(Double, Array[Double])])]])
 
       val songRegionTable = denormalize(songs)
+      
       val paramsSet = groupedEvenly(for (
         foldIndex <- 0 until folds;
         isSplit <- List(true, false);
@@ -372,17 +373,17 @@ object FasterFinal extends App {
           record._1.title == title)
       val concatHisto = for (
         (info, histogram) <- songHistograms.toArray;
-        _ = println(info);
+        //_ = println(info);
         histogramLength = bagCountByFrameLength(info.frameLength - 1);
         frequency <- (0 until histogramLength)
           .map(histogram.toMap.getOrElse(_, 0.0))
       ) yield {
         frequency
       }
-      println(level)
+      //println(level)
       
       
-      println(concatHisto.size, numAttributes)
+      //println(concatHisto.size, numAttributes)
       for ((frequency, index) <- concatHisto.zipWithIndex) {
         instance.setValue(index, frequency)
       }
@@ -505,7 +506,7 @@ object FasterFinal extends App {
     // Split dataset for cross-validation
     val songSlices = groupedEvenly(songs, folds)
     val songSets =
-      for (fold <- (0 until folds).toStream) yield {
+      for (fold <- (0 until folds).toIterator) yield {
         ((songSlices.take(fold) ++ songSlices.drop(fold + 1)).flatten,
           songSlices(fold))
       }
@@ -569,46 +570,65 @@ object FasterFinal extends App {
       region.toArray))
   }
 
-  def convertResults(regions: Iterable[(FrameSetInfo, Array[FrameVector])]) = {
-    for ((info, region) <- regions.toStream) yield (info, convertFramesToInstances(region,
+  def convertResults(regions: Iterator[(FrameSetInfo, Array[FrameVector])]) = {
+    for ((info, region) <- regions) yield (info, convertFramesToInstances(region,
       splitInfo(info.isSplit).featureLengths(info.featureType),
       splitInfo(info.isSplit).featureNames(info.featureType)))
   }
 
   // Cluster instances
-  def cluster(songRegionTable: Stream[(FrameSetInfo, Array[FrameVector])],
+  def cluster(songs: Array[((String, String), Array[(Double, Array[Double])])],
     foldIndex: Int, isSplit: Boolean, frameLength: Int) = {
     def randSubset(count: Int, lower: Int, upper: Int, sofar: Set[Int] = Set.empty): Set[Int] =
       if (count == sofar.size) sofar else
         randSubset(count, lower, upper, sofar + (Random.nextInt(upper - lower) + lower))
 
-    for (featureType <- splitInfo(isSplit).featureLengths.indices) yield {
-      val matchingRegions = convertResults(
-        songRegionTable.filter(
-          record => {
-            val info = record._1
-            info.foldIndex == foldIndex &&
-              info.isSplit == isSplit &&
-              info.frameLength == frameLength &&
-              info.featureType == featureType &&
-              info.isTraining == true &&
-              info.level == 0
-          }))
-      val instances = new Instances(matchingRegions(0)._2, 0)
-      for (
-        subset <- matchingRegions;
-        indices = randSubset(subset._2.numInstances()/10,
-            0, subset._2.numInstances());
-        index <- indices
-      ) {
-        instances.add(subset._2.instance(index))
-      }
+        
+    val songSlices = groupedEvenly(songs, folds)
+    val trainingSet = (songSlices.take(foldIndex) ++
+        songSlices.drop(foldIndex + 1)).flatten
+    // Dimensions: feature type, song
+    val byFeatureType = trainingSet.flatMap(song => {
+      val frames = song._2.map(_._2).iterator.sliding(frameLength)
       
-      println("Clustering " + FrameSetInfo(foldIndex,
+      for ((region, featureType) <- splitInfo(isSplit)
+      .splitter(frames.map(_.toArray).toSeq).zipWithIndex) yield
+      (FrameSetInfo(foldIndex,
+        true,
+        isSplit,
+        frameLength,
+        featureType,), region.toArray)
+    }).transpose.toIterator
+        
+    for ((regions,featureType) <- byFeatureType.zipWithIndex) yield {
+      println("f" + FrameSetInfo(foldIndex,
         true,
         isSplit,
         frameLength,
         featureType))
+      val matchingRegions = convertResults(regions
+        ).buffered
+      println("d" + FrameSetInfo(foldIndex,
+        true,
+        isSplit,
+        frameLength,
+        featureType))    
+      val instances = new Instances(matchingRegions.head._2, 0)
+      for (subset <- matchingRegions) {
+        for (
+          index <- randSubset(subset._2.numInstances() / 10,
+            0, subset._2.numInstances())
+        ) {
+          instances.add(subset._2.instance(index))
+        }
+        subset._2.delete()
+      }
+      
+      /*println("Clustering " + FrameSetInfo(foldIndex,
+        true,
+        isSplit,
+        frameLength,
+        featureType))*/
       val result = (FrameSetInfo(foldIndex,
         true,
         isSplit,
@@ -671,7 +691,7 @@ object FasterFinal extends App {
         "",
         "",
         -1)
-      println(key)
+      //println(key)
       serializeObject("histograms", key, currentHistograms)
     }
   }
