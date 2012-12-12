@@ -50,7 +50,7 @@ class Timer(maxItems: Int) {
   }
 }
 
-object FasterFinal extends App {
+object FasterFinal {
   // Notes for types
   type Feature = Double
   type FeatureVector = Array[Double]
@@ -139,26 +139,28 @@ object FasterFinal extends App {
     "T1,T2,T3,T4,P1,P2,P3,P4,D1,D2,D3,D4,C1,C2,C3,C4\n\n" +
     "Note that C1 is not bagged, so it doesn't do anything."
 
-  args.toList match {
-    case List("-d", songCount) => download(songCount.toInt)
-    case List("-c", bagCounts, splitNum, maxSplit) => clusterChunk(
-        bagCounts,
-        parseBagCounts(bagCounts), splitNum.toInt,
-        maxSplit.toInt)
-    case List("-h", bagCounts, splitNum, maxSplit) => histogramChunk(
-        bagCounts, splitNum.toInt,
-        maxSplit.toInt)
-    case List("-s", bagCounts, splitNum, maxSplit) => svmChunk(
-        bagCounts,
-        parseBagCounts(bagCounts), splitNum.toInt,
-        maxSplit.toInt)
-    case List("-e", bagCounts) => evaluate(bagCounts, parseBagCounts(bagCounts))
-    case List("--evolve", sparkServer, popSize) =>
-      evolve(popSize.toInt, sparkServer)
-    case _ => {
-      // If there are too many arguments print a help message and exit
-      println(helpMessage)
-      throw new IllegalArgumentException("Invalid number of arguments")
+  def main(args: Array[String]) {
+    args.toList match {
+      case List("-d", songCount) => download(songCount.toInt)
+      case List("-c", bagCounts, splitNum, maxSplit) => clusterChunk(
+          bagCounts,
+          parseBagCounts(bagCounts), splitNum.toInt,
+          maxSplit.toInt)
+      case List("-h", bagCounts, splitNum, maxSplit) => histogramChunk(
+          bagCounts, splitNum.toInt,
+          maxSplit.toInt)
+      case List("-s", bagCounts, splitNum, maxSplit) => svmChunk(
+          bagCounts,
+          parseBagCounts(bagCounts), splitNum.toInt,
+          maxSplit.toInt)
+      case List("-e", bagCounts) => evaluate(bagCounts, parseBagCounts(bagCounts))
+      case List("--evolve", sparkServer, popSize) =>
+        evolve(popSize.toInt, sparkServer)
+      case _ => {
+        // If there are too many arguments print a help message and exit
+        println(helpMessage)
+        throw new IllegalArgumentException("Invalid number of arguments")
+      }
     }
   }
   
@@ -184,7 +186,25 @@ object FasterFinal extends App {
     }
     
     // Connect to Spark server
-    val sc = new SparkContext(sparkServer, "BeatleEvolution")
+    println(getClass.getProtectionDomain.getCodeSource.getLocation.toURI)
+    val sc = new SparkContext(sparkServer, "BeatleEvolution",
+        "/home/tommy/Applications/spark-0.6.1",
+      Seq(getClass.getProtectionDomain.getCodeSource.getLocation.toURI.toString))
+
+    // Load up the music
+    val songs = sc.broadcast(
+      try {
+        deserializeObject("data", "music",
+          manifest[Array[((String, String), Array[(Double, Array[Double])])]])
+      } catch {
+        case _ => {
+          // download the music
+          download(100)
+          // If that didn't download it, it's okay to crash
+          deserializeObject("data", "music",
+            manifest[Array[((String, String), Array[(Double, Array[Double])])]])
+        }
+      })
     
     @tailrec
     def runGeneration(generation: Int, population: Array[Array[Int]],
@@ -192,7 +212,8 @@ object FasterFinal extends App {
       // Evaluate fitnesses
       val fitnessInfo =
         (sc.parallelize(population).flatMap(genome => {
-         val evalInfo = evaluateBagCounts(genome, 0, 1)
+         println("Job started")
+         val evalInfo = evaluateBagCounts(genome, 0, 1, true, Some(songs.value))
          
          evalInfo.map(x => (genome, x._1, x._2))
         })).collect
@@ -251,42 +272,46 @@ object FasterFinal extends App {
     }
   }
   
-  // Evaluates a bag count genome
-  def evaluateBagCounts(bagCountGenome: Iterable[Int], splitNum: Int,
-      maxSplit: Int, cleanup: Boolean = true): Option[(String, Double)] = {
-    val bagCountsString = bagCountGenome.mkString(",")
-    val bagCounts = parseBagCounts(bagCountsString)
+  // Evaluates a bag count genome,
     
-    // Make sure that there is music to use
-    val songs = try {
-      deserializeObject("data", "music",
-      manifest[Array[((String, String), Array[(Double, Array[Double])])]])
-    } catch {
-      case _ => {
-        // If we're the master, download the music
-        if (splitNum == 0)
-        	download(100)
-        // Otherwise, wait for the music
-        else
-          waitForMatchingFiles("""^data\.music$""", 1)
-        // If that didn't download it, it's okay to crash
+  def evaluateBagCounts(bagCountGenome: Iterable[Int], splitNum: Int,
+      maxSplit: Int, cleanup: Boolean = true, 
+      possibleSongs: Option[Array[((String, String), Array[(Double, Array[Double])])]] = None) = {
+    val songs = possibleSongs.getOrElse {
+      try {
         deserializeObject("data", "music",
-      manifest[Array[((String, String), Array[(Double, Array[Double])])]])
+          manifest[Array[((String, String), Array[(Double, Array[Double])])]])
+      } catch {
+        case _ => {
+          // If we're the master, download the music
+          if (splitNum == 0)
+            download(100)
+          // Otherwise, wait for the music
+          else
+            waitForMatchingFiles("""^data\.music$""", 1)
+          // If that didn't download it, it's okay to crash
+          deserializeObject("data", "music",
+            manifest[Array[((String, String), Array[(Double, Array[Double])])]])
+        }
       }
     }
+    val bagCountsString = bagCountGenome.mkString(",")
+    val bagCounts = parseBagCounts(bagCountsString)
 
     // Run all the stuff
     clusterChunk(
       bagCountsString,
       bagCounts, splitNum,
-      maxSplit)
+      maxSplit,
+      Some(songs))
     // Barrier
     val clusterRegex = """^""" + bagCountsString + 
         """_FrameSetInfo\(.*\)\.cluster$"""
     waitForMatchingFiles(clusterRegex, folds * 2 * maxFrameLength)
     histogramChunk(
       bagCountsString, splitNum,
-      maxSplit)
+      maxSplit,
+      Some(songs))
     // Barrier
     val histoRegex = """^""" + bagCountsString + 
         """_FrameSetInfo\(.*\)\.histograms"""
@@ -331,11 +356,15 @@ object FasterFinal extends App {
     keys zip values toMap
   }
 
-  def clusterChunk(prefix: String, 
-      bagCounts: Map[(Boolean, Int, Int), Int], nodeIndex: Int, 
-      nodeCount: Int) = {
-    val songs = deserializeObject("data", "music",
-      manifest[Array[((String, String), Array[(Double, Array[Double])])]])
+  def clusterChunk(prefix: String,
+    bagCounts: Map[(Boolean, Int, Int), Int], nodeIndex: Int,
+    nodeCount: Int,
+    possibleSongs: Option[Array[((String, String), Array[(Double, Array[Double])])]] = None) = {
+    val songs = possibleSongs.getOrElse {
+      deserializeObject("data", "music",
+        manifest[Array[((String, String), Array[(Double, Array[Double])])]])
+    }
+      
 
     val paramsSet = groupedEvenly(for (
       foldIndex <- 0 until folds;
@@ -352,9 +381,12 @@ object FasterFinal extends App {
     }
   }
 
-  def histogramChunk(prefix: String, nodeIndex: Int, nodeCount: Int) = {
-    val songs = deserializeObject("data", "music",
-      manifest[Array[((String, String), Array[(Double, Array[Double])])]])
+  def histogramChunk(prefix: String, nodeIndex: Int, nodeCount: Int,
+    possibleSongs: Option[Array[((String, String), Array[(Double, Array[Double])])]] = None) = {
+    val songs = possibleSongs.getOrElse {
+      deserializeObject("data", "music",
+        manifest[Array[((String, String), Array[(Double, Array[Double])])]])
+    }
     val paramsSet = groupedEvenly(for (
       foldIndex <- 0 until folds;
       isTraining <- List(true, false);
