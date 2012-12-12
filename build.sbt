@@ -26,6 +26,7 @@ mainClass in assembly := Some("edu.unr.tkelly.genre.FasterFinal")
 jarName in assembly := "cs773c-final.jar"
 
 resolvers ++= Seq(
+  "spray-can-resolver-0" at "http://repo.spray.cc",
   "Typesafe Repository" at "http://repo.typesafe.com/typesafe/releases/")
 
 libraryDependencies ++= Seq(

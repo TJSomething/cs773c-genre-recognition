@@ -131,8 +131,6 @@ object FasterFinal extends App {
     case List("-c", splitNum, maxSplit) => {
       val songs = deserializeObject("music",
         manifest[Array[((String, String), Array[(Double, Array[Double])])]])
-
-      val songRegionTable = denormalize(songs)
       
       val paramsSet = groupedEvenly(for (
         foldIndex <- 0 until folds;
@@ -143,7 +141,7 @@ object FasterFinal extends App {
 
       val t = new Timer(paramsSet.size)
       for (params <- paramsSet.par) {
-        cluster(songRegionTable, params._1, params._2, params._3)
+        cluster(songs, params._1, params._2, params._3)
         t += 1
         println(t.status())
       }
@@ -587,34 +585,27 @@ object FasterFinal extends App {
     val songSlices = groupedEvenly(songs, folds)
     val trainingSet = (songSlices.take(foldIndex) ++
         songSlices.drop(foldIndex + 1)).flatten
-    // Dimensions: feature type, song
-    val byFeatureType = trainingSet.flatMap(song => {
-      val frames = song._2.map(_._2).iterator.sliding(frameLength)
-      
-      for ((region, featureType) <- splitInfo(isSplit)
-      .splitter(frames.map(_.toArray).toSeq).zipWithIndex) yield
-      (FrameSetInfo(foldIndex,
-        true,
-        isSplit,
-        frameLength,
-        featureType,), region.toArray)
-    }).transpose.toIterator
+    // Dimensions: feature type, frame, feature
+    val byFeatureType = trainingSet.map(song => {
+      // Frame, segment, feature
+      val frames = song._2.map(_._2).iterator.sliding(frameLength).toArray
+      // Feature type, frame, feature
+      val byFeatureType = splitInfo(isSplit)
+      .splitter(frames.map(_.toArray).toSeq)
+      byFeatureType.map(_.toArray)
+    }).transpose
+    .map(xs => xs.flatten)
         
-    for ((regions,featureType) <- byFeatureType.zipWithIndex) yield {
-      println("f" + FrameSetInfo(foldIndex,
+    for ((frames,featureType) <- byFeatureType.zipWithIndex) yield {
+      val convertedRegion = convertResults(
+          Array((FrameSetInfo(foldIndex,
         true,
         isSplit,
         frameLength,
-        featureType))
-      val matchingRegions = convertResults(regions
-        ).buffered
-      println("d" + FrameSetInfo(foldIndex,
-        true,
-        isSplit,
-        frameLength,
-        featureType))    
-      val instances = new Instances(matchingRegions.head._2, 0)
-      for (subset <- matchingRegions) {
+        featureType),frames)).toIterator
+        ).buffered   
+      val instances = new Instances(convertedRegion.head._2, 0)
+      for (subset <- convertedRegion) {
         for (
           index <- randSubset(subset._2.numInstances() / 10,
             0, subset._2.numInstances())
