@@ -211,7 +211,7 @@ object FasterFinal {
       bestGenome: (Array[Int], String, Double)): Unit = {
       // Evaluate fitnesses
       val fitnessInfo =
-        (sc.parallelize(population).flatMap(genome => {
+        (sc.parallelize(population, population.size).flatMap(genome => {
          println("Job started")
          val evalInfo = evaluateBagCounts(genome, 0, 1, true, Some(songs.value))
          
