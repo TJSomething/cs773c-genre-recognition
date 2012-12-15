@@ -188,9 +188,9 @@ object FasterFinal {
     
     // Connect to Spark server
     println(getClass.getProtectionDomain.getCodeSource.getLocation.toURI)
-    val sc = new SparkContext(sparkServer, "BeatleEvolution"/*,
+    val sc = new SparkContext(sparkServer, "BeatleEvolution",
         "/home/tommy/Applications/spark-0.6.1",
-      Seq(getClass.getProtectionDomain.getCodeSource.getLocation.toURI.toString)*/)
+      Seq(getClass.getProtectionDomain.getCodeSource.getLocation.toURI.toString))
 
     // Load up the music
     val songs = sc.broadcast(
