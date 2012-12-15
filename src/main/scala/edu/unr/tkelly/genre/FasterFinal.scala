@@ -26,6 +26,8 @@ import java.io._
 import scala.compat.Platform
 import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.immutable.Traversable
+import scala.annotation.tailrec
+import scala.math.{ sqrt, pow }
 
 class Timer(maxItems: Int) {
   val count = new AtomicInteger(0)
@@ -48,7 +50,7 @@ class Timer(maxItems: Int) {
   }
 }
 
-object FasterFinal extends App {
+object FasterFinal {
   // Notes for types
   type Feature = Double
   type FeatureVector = Array[Double]
@@ -59,9 +61,9 @@ object FasterFinal extends App {
   // Some parameters
   val folds = 10
   val maxFrameLength = 4
-  val bagCountByFrameLength = List(123, 7, 38, 100)
-  val temporalPyramidLevels = 3
-  val filePrefix = "data"
+  //val bagCountByFrameLength = List(123, 7, 38, 100)
+  val temporalPyramidLevels = 4
+  //val filePrefix = "data"
 
   // Serialization stuff
   // Splitting info
@@ -73,7 +75,7 @@ object FasterFinal extends App {
     Map(
       false -> FeatureSplit(framePassthrough _,
         List(25),
-        List("timbre_pitch_duration")),
+        List("combined")),
       true -> FeatureSplit(frameSplit _,
         List(12, 12, 1),
         List("timbre", "pitch", "duration")))
@@ -121,70 +123,372 @@ object FasterFinal extends App {
   val helpMessage = "Syntax: FasterFinal <command>\n" +
     "Commands:\n" +
     "-d <song count>: download data\n" +
-    "-c <job split number> <max jobs>: cluster data\n" +
+    "-c <bag counts> <job split number> <max jobs>: cluster data\n" +
     "-h <job split number> <max jobs>: build histograms\n" +
-    "-s <job split number> <max jobs>: create SVM classifiers\n" +
-    "-e: Evaluate\n"
+    "-s <bag counts> <job split number> <max jobs>: create SVM classifiers\n" +
+    "-e: Evaluate\n" +
+    "--evolve <Spark server> <population size> <is split>: Evolve an better bag count\n\n" +
+    "Bag counts are comma-separated lists of integers representing\n" +
+    "the number of bags used for each kind of feature:\n" +
+    "C: combined\n" +
+    "T: timbre\n" +
+    "P: pitch\n" +
+    "D: duration\n" +
+    "<number>: segment length\n\n" +
+    "In order, that's:\n" +
+    "T1,T2,T3,T4,P1,P2,P3,P4,D1,D2,D3,D4,C1,C2,C3,C4\n\n" +
+    "Note that C1 is not bagged, so it doesn't do anything."
 
-  args.toList match {
-    case List("-d", songCount) => download(songCount.toInt)
-    case List("-c", splitNum, maxSplit) => {
-      val songs = deserializeObject("music",
+  def main(args: Array[String]) {
+    args.toList match {
+      case List("-d", songCount) => download(songCount.toInt)
+      case List("-c", bagCounts, splitNum, maxSplit) => clusterChunk(
+          bagCounts,
+          parseBagCounts(bagCounts), splitNum.toInt,
+          maxSplit.toInt)
+      case List("-h", bagCounts, splitNum, maxSplit) => histogramChunk(
+          bagCounts, splitNum.toInt,
+          maxSplit.toInt)
+      case List("-s", bagCounts, splitNum, maxSplit) => svmChunk(
+          bagCounts,
+          parseBagCounts(bagCounts), splitNum.toInt,
+          maxSplit.toInt)
+      case List("-e", bagCounts) => evaluateAll(bagCounts, parseBagCounts(bagCounts))
+      case List("--evolve", sparkServer, popSize, isSplit) =>
+        evolve(popSize.toInt, sparkServer, isSplit.toBoolean, 0)
+      case _ => {
+        // If there are too many arguments print a help message and exit
+        println(helpMessage)
+        throw new IllegalArgumentException("Invalid number of arguments")
+      }
+    }
+  }
+  
+  // Run evolution
+  def evolve(popSize: Int, sparkServer: String, isSplit: Boolean, 
+    maxLevels: Int): Unit = {
+    // Make a genome printable
+    def makePrintable(genome: (Array[Int], String, Double)) = 
+      (genome._1.toSeq, genome._2, genome._3)
+    // Try to load a population
+    val (generation, population, bestGenome) = try {
+      deserializeObject("data", "population",
+      manifest[(Int, Array[Array[Int]], (Array[Int], String, Double))])
+    } catch {
+      case _ => {
+        // Otherwise, make a population
+        (0, // First generation
+        Array.fill(popSize) {
+          Array.fill(16) {Random.nextInt(200)+1}
+        },
+        // Nonsense best genome
+        (Array.fill(16) {0}, "nothing", Double.NegativeInfinity))
+      }
+    }
+    
+    // Connect to Spark server
+    println(getClass.getProtectionDomain.getCodeSource.getLocation.toURI)
+    val sc = new SparkContext(sparkServer, "BeatleEvolution"/*,
+        "/home/tommy/Applications/spark-0.6.1",
+      Seq(getClass.getProtectionDomain.getCodeSource.getLocation.toURI.toString)*/)
+
+    // Load up the music
+    val songs = sc.broadcast(
+      try {
+        deserializeObject("data", "music",
+          manifest[Array[((String, String), Array[(Double, Array[Double])])]])
+      } catch {
+        case _ => {
+          // download the music
+          download(100)
+          // If that didn't download it, it's okay to crash
+          deserializeObject("data", "music",
+            manifest[Array[((String, String), Array[(Double, Array[Double])])]])
+        }
+      })
+    
+    @tailrec
+    def runGeneration(generation: Int, population: Array[Array[Int]],
+      bestGenome: (Array[Int], String, Double)): Unit = {
+      // Evaluate fitnesses
+      val fitnessInfo =
+        (sc.parallelize(population, population.size).flatMap(genome => {
+         println("Job started")
+         val evalInfo = evaluateBagCounts(genome, 0, 1, isSplit, 0, true,
+             Some(songs.value))
+         
+         evalInfo.map(x => (genome, x._1, x._2))
+        })).collect
+
+      // Gather info for convinient use
+      val fitnesses = fitnessInfo.map(_._3)
+      val thisBestGenome = fitnessInfo.maxBy(_._3)
+      val newBestGenome = 
+          List(thisBestGenome, bestGenome).maxBy(_._3)
+      val newBestInfo = newBestGenome._1.toSeq + " using " + newBestGenome._2
+      val thisBestInfo = thisBestGenome._1.toSeq + " using " + thisBestGenome._2
+
+      println()
+      println("Generation " ++ generation.toString ++ ":")
+      println("Best genome: " ++ thisBestInfo.toString)
+      println("Best fitness: " ++ fitnesses.max.toString)
+      println("Average fitness: " ++ (fitnesses.sum / fitnesses.size).toString)
+      println("Worst fitness: " ++ fitnesses.min.toString)
+      println()
+      println("All time:")
+      println("Best genome: " ++ newBestInfo)
+      println("Best fitness: " ++ newBestGenome._3.toString)
+
+      // Evolution stuff
+      val newPopulation =
+        mutate(
+          (Array.fill(popSize / 2) {
+            val children = crossover(
+              selection(population, fitnesses),
+              selection(population, fitnesses))
+            List(children._1, children._2)
+          }).flatten)
+
+      // Save information
+      serializeObject("data", "population",
+        (generation + 1, newPopulation, newBestGenome))
+
+      runGeneration(generation + 1, newPopulation, newBestGenome)
+    }
+    
+    runGeneration(generation, population, bestGenome)
+  }
+  
+  // Wait for files that match the regex
+  def waitForMatchingFiles(regex: String, count: Int) = {
+    def getFileCount() =
+        (new File("."))
+          .listFiles()
+          .map(_.getName())
+          .filter(filename => filename.matches(regex))
+          .size
+    
+    // Every time we don't have enough files, wait one tenth of a second
+    while (getFileCount() < count) {
+      Thread.sleep(100)
+    }
+  }
+  
+  // Evaluates a bag count genome,
+  def evaluateBagCounts(bagCountGenome: Iterable[Int], splitNum: Int,
+      maxSplit: Int, cleanup: Boolean, 
+      possibleSongs: Option[Array[((String, String), Array[(Double, Array[Double])])]]) = {
+    val songs = possibleSongs.getOrElse {
+      try {
+        deserializeObject("data", "music",
+          manifest[Array[((String, String), Array[(Double, Array[Double])])]])
+      } catch {
+        case _ => {
+          // If we're the master, download the music
+          if (splitNum == 0)
+            download(100)
+          // Otherwise, wait for the music
+          else
+            waitForMatchingFiles("""^data\.music$""", 1)
+          // If that didn't download it, it's okay to crash
+          deserializeObject("data", "music",
+            manifest[Array[((String, String), Array[(Double, Array[Double])])]])
+        }
+      }
+    }
+    val bagCountsString = bagCountGenome.mkString(",")
+    val bagCounts = parseBagCounts(bagCountsString)
+
+    // Run all the stuff
+    clusterChunk(
+      bagCountsString,
+      bagCounts, splitNum,
+      maxSplit,
+      Some(songs))
+    // Barrier
+    val clusterRegex = """^""" + bagCountsString + 
+        """_FrameSetInfo\(.*\)\.cluster$"""
+    waitForMatchingFiles(clusterRegex, folds * 2 * maxFrameLength)
+    histogramChunk(
+      bagCountsString, splitNum,
+      maxSplit,
+      Some(songs))
+    // Barrier
+    val histoRegex = """^""" + bagCountsString + 
+        """_FrameSetInfo\(.*\)\.histograms"""
+    waitForMatchingFiles(histoRegex, folds*2*4*maxFrameLength)
+    if (cleanup) {
+      for (files <- Option(new File(".").listFiles);
+           file <- files if file.getName matches clusterRegex)
+        file.delete
+    }
+    svmChunk(
+      bagCountsString,
+      bagCounts, splitNum,
+      maxSplit)
+    val svmRegex = """^""" + bagCountsString + 
+        """_FrameSetInfo\(.*\)\.svm"""
+    waitForMatchingFiles(svmRegex, folds*2*temporalPyramidLevels)
+    
+    val result = if (splitNum == 0) {
+        Some(evaluateAll(bagCountsString, bagCounts))
+    } else {
+      None
+    }
+    
+    // Cleanup files
+    if (cleanup) {
+      for (files <- Option(new File(".").listFiles);
+           file <- files if file.getName matches (histoRegex+"|"+svmRegex))
+        file.delete
+    }
+    
+    result
+  }
+  
+    // Evaluates a bag count genome,
+  def evaluateBagCounts(bagCountGenome: Iterable[Int], splitNum: Int,
+      maxSplit: Int, isSplit: Boolean, maxLevel: Int, cleanup: Boolean, 
+      possibleSongs: Option[Array[((String, String), Array[(Double, Array[Double])])]]) = {
+    val songs = possibleSongs.getOrElse {
+      try {
+        deserializeObject("data", "music",
+          manifest[Array[((String, String), Array[(Double, Array[Double])])]])
+      } catch {
+        case _ => {
+          // If we're the master, download the music
+          if (splitNum == 0)
+            download(100)
+          // Otherwise, wait for the music
+          else
+            waitForMatchingFiles("""^data\.music$""", 1)
+          // If that didn't download it, it's okay to crash
+          deserializeObject("data", "music",
+            manifest[Array[((String, String), Array[(Double, Array[Double])])]])
+        }
+      }
+    }
+    val bagCountsString = bagCountGenome.mkString(",")
+    val bagCounts = parseBagCounts(bagCountsString)
+
+    // Run all the stuff
+    clusterChunk(
+      bagCountsString,
+      bagCounts, splitNum,
+      maxSplit,
+      Some(songs))
+    // Barrier
+    val clusterRegex = """^""" + bagCountsString + 
+        """_FrameSetInfo\(.*\)\.cluster$"""
+    waitForMatchingFiles(clusterRegex, folds * 2 * maxFrameLength)
+    histogramChunk(
+      bagCountsString, splitNum,
+      maxSplit,
+      Some(songs))
+    // Barrier
+    val histoRegex = """^""" + bagCountsString + 
+        """_FrameSetInfo\(.*\)\.histograms"""
+    waitForMatchingFiles(histoRegex, folds*2*4*maxFrameLength)
+    if (cleanup) {
+      for (files <- Option(new File(".").listFiles);
+           file <- files if file.getName matches clusterRegex)
+        file.delete
+    }
+    for (foldIndex <- 0 until folds)
+      svmClassifiers(bagCountsString, bagCounts, foldIndex, isSplit, maxLevel)
+    val svmRegex = """^""" + bagCountsString + 
+        """_FrameSetInfo\(.*\)\.svm"""
+    waitForMatchingFiles(svmRegex, folds*(maxLevel+1))
+    
+    val result = if (splitNum == 0) {
+        Some(evaluateOne(bagCountsString, bagCounts, isSplit, maxLevel))
+    } else {
+      None
+    }
+    
+    // Cleanup files
+    if (cleanup) {
+      for (files <- Option(new File(".").listFiles);
+           file <- files if file.getName matches (histoRegex+"|"+svmRegex))
+        file.delete
+    }
+    
+    result
+  }
+  
+  def parseBagCounts(arg: String) = {
+    val keys = for (isSplit <- List(true, false);
+     featureType <- splitInfo(isSplit).featureLengths.indices;
+     lengthIndex <- 0 until maxFrameLength) yield
+     (isSplit, featureType, lengthIndex)
+     
+    val values = arg.split(',').map(_.toInt)
+    
+    keys zip values toMap
+  }
+
+  def clusterChunk(prefix: String,
+    bagCounts: Map[(Boolean, Int, Int), Int], nodeIndex: Int,
+    nodeCount: Int,
+    possibleSongs: Option[Array[((String, String), Array[(Double, Array[Double])])]] = None) = {
+    val songs = possibleSongs.getOrElse {
+      deserializeObject("data", "music",
         manifest[Array[((String, String), Array[(Double, Array[Double])])]])
+    }
       
-      val paramsSet = groupedEvenly(for (
-        foldIndex <- 0 until folds;
-        isSplit <- List(true, false);
-        frameLength <- 1 to maxFrameLength
-      ) yield (foldIndex, isSplit, frameLength),
-        maxSplit.toInt).apply(splitNum.toInt)
 
-      val t = new Timer(paramsSet.size)
-      for (params <- paramsSet.par) {
-        cluster(songs, params._1, params._2, params._3)
-        t += 1
-        println(t.status())
-      }
+    val paramsSet = groupedEvenly(for (
+      foldIndex <- 0 until folds;
+      isSplit <- List(true, false);
+      frameLength <- 1 to maxFrameLength
+    ) yield (foldIndex, isSplit, frameLength),
+      nodeCount).apply(nodeIndex)
+
+    val t = new Timer(paramsSet.size)
+    for (params <- paramsSet.par) {
+      cluster(prefix, songs, bagCounts, params._1, params._2, params._3)
+      t += 1
+      println(t.status())
     }
-    case List("-h", splitNum, maxSplit) => {
-      val songs = deserializeObject("music",
+  }
+
+  def histogramChunk(prefix: String, nodeIndex: Int, nodeCount: Int,
+    possibleSongs: Option[Array[((String, String), Array[(Double, Array[Double])])]] = None) = {
+    val songs = possibleSongs.getOrElse {
+      deserializeObject("data", "music",
         manifest[Array[((String, String), Array[(Double, Array[Double])])]])
-      val paramsSet = groupedEvenly(for (
-        foldIndex <- 0 until folds;
-        isTraining <- List(true, false);
-        isSplit <- List(true, false);
-        frameLength <- 1 to maxFrameLength;
-        featureType <- splitInfo(isSplit).featureLengths.indices
-      ) yield (foldIndex, isTraining, isSplit, frameLength, featureType, songs),
-        maxSplit.toInt).apply(splitNum.toInt)
-
-      val t = new Timer(paramsSet.size)
-      for (p <- paramsSet.par) {
-        (histograms _).tupled(p)
-        t += 1
-        println(t.status())
-      }
     }
-    case List("-s", splitNum, maxSplit) =>
-      val paramsSet = groupedEvenly(for (
-        foldIndex <- 0 until folds;
-        isSplit <- List(true, false);
-        level <- 0 to temporalPyramidLevels
-      ) yield (foldIndex, isSplit, level), maxSplit.toInt).apply(splitNum.toInt)
+    val paramsSet = groupedEvenly(for (
+      foldIndex <- 0 until folds;
+      isTraining <- List(true, false);
+      isSplit <- List(true, false);
+      frameLength <- 1 to maxFrameLength;
+      featureType <- splitInfo(isSplit).featureLengths.indices
+    ) yield (prefix, foldIndex, isTraining, isSplit, frameLength, featureType, songs),
+      nodeCount).apply(nodeIndex)
 
-      val t = new Timer(paramsSet.size)
-      for (params <- paramsSet.par) {
-        svmClassifiers(params._1, params._2, params._3)
-        t += 1
-        println(t.status())
-      }
-    case List("-e") => {
-      evaluate()
+    val t = new Timer(paramsSet.size)
+    for (p <- paramsSet.par) {
+      (histograms _).tupled(p)
+      t += 1
+      println(t.status())
     }
-    case _ => {
-      // If there are too many arguments print a help message and exit
-      println(helpMessage)
-      throw new IllegalArgumentException("Invalid number of arguments")
+  }
+
+  def svmChunk(prefix: String,
+      bagCounts: Map[(Boolean, Int, Int), Int], nodeIndex: Int,
+      nodeCount: Int) = {
+    val paramsSet = groupedEvenly(for (
+      foldIndex <- 0 until folds;
+      isSplit <- List(true, false);
+      level <- 0 to temporalPyramidLevels
+    ) yield (foldIndex, isSplit, level), nodeCount).apply(nodeIndex)
+
+    val t = new Timer(paramsSet.size)
+    for (params <- paramsSet.par) {
+      svmClassifiers(prefix, bagCounts, params._1, params._2, params._3)
+      t += 1
+      println(t.status())
     }
   }
 
@@ -327,17 +631,23 @@ object FasterFinal extends App {
     clusterer
   }
 
-  def combineHistograms(histograms: GenSeq[(FrameSetInfo, Map[Int, Double])],
+  def combineHistograms(bagCounts: Map[(Boolean, Int, Int), Int],
+      histograms: GenSeq[(FrameSetInfo, Map[Int, Double])],
     level: Int) = {
     // Make the attributes
     val localSplitInfo = splitInfo(histograms(0)._1.isSplit)
     val attributes = new FastVector(0)
     for (
       segmentIndex <- 0 until maxFrameLength;
-      featureType <- localSplitInfo.featureNames;
+      (featureType, featureIndex) <- localSplitInfo.featureNames.zipWithIndex;
       l <- 0 to level;
       region <- 0 until (1 << l);
-      clusterIndex <- 0 until bagCountByFrameLength(segmentIndex)
+      attributeCount = 
+        if (localSplitInfo.featureLengths(featureIndex) * (segmentIndex+1) == 1)
+          2
+        else
+          bagCounts(histograms(0)._1.isSplit, featureIndex, segmentIndex); 
+      clusterIndex <- 0 until attributeCount
     ) yield {
       attributes.addElement(
         new Attribute("segment%02d-%s-level%02d-region%02d-C%02d"
@@ -363,6 +673,7 @@ object FasterFinal extends App {
     // Build the instances
     val unifiedHistograms = new Instances("histograms", attributes, 0)
     unifiedHistograms.setClass(beatlesAttrib)
+    //println(unifiedHistograms)
     for ((artist, title) <- songArtistTitles) {
       val instance = new Instance(numAttributes + 1)
       instance.setDataset(unifiedHistograms)
@@ -372,7 +683,12 @@ object FasterFinal extends App {
       val concatHisto = for (
         (info, histogram) <- songHistograms.toArray;
         //_ = println(info);
-        histogramLength = bagCountByFrameLength(info.frameLength - 1);
+        histogramLength = if (localSplitInfo.featureLengths(info.featureType) *
+            (info.frameLength) == 1)
+          2
+        else
+          bagCounts(histograms(0)._1.isSplit, info.featureType, info.frameLength - 1);
+        //_ = println(histogramLength);
         frequency <- (0 until histogramLength)
           .map(histogram.toMap.getOrElse(_, 0.0))
       ) yield {
@@ -380,8 +696,8 @@ object FasterFinal extends App {
       }
       //println(level)
       
-      
-      //println(concatHisto.size, numAttributes)
+      //println(concatHisto.size, numAttributes+1)
+      assert(concatHisto.size == numAttributes)
       for ((frequency, index) <- concatHisto.zipWithIndex) {
         instance.setValue(index, frequency)
       }
@@ -404,7 +720,8 @@ object FasterFinal extends App {
     rawHisto.mapValues(_.toDouble / total)
   }
 
-  def serializeObject[A <: java.io.Serializable](objectGroup: String,
+  def serializeObject[A <: java.io.Serializable](filePrefix: String, 
+      objectGroup: String,
     key: FrameSetInfo, value: A) {
     val fos = new FileOutputStream(filePrefix + "_" + key + "." + objectGroup)
     val oos = new ObjectOutputStream(fos)
@@ -418,7 +735,8 @@ object FasterFinal extends App {
       value.toString)
   }
 
-  def serializeObject[A <: java.io.Serializable](objectGroup: String,
+  def serializeObject[A <: java.io.Serializable](filePrefix: String, 
+      objectGroup: String,
     value: A) {
     val fos = new FileOutputStream(filePrefix + "." + objectGroup)
     val oos = new ObjectOutputStream(fos)
@@ -429,7 +747,8 @@ object FasterFinal extends App {
     fos.close()
   }
 
-  def deserializeObject[B <: java.io.Serializable](objectGroup: String,
+  def deserializeObject[B <: java.io.Serializable](filePrefix: String, 
+      objectGroup: String,
     key: FrameSetInfo, manifest: ClassManifest[B]): B = {
     val fis = new FileInputStream(filePrefix + "_" + key + "." + objectGroup)
     val ois = new ObjectInputStream(fis)
@@ -439,7 +758,8 @@ object FasterFinal extends App {
     result.asInstanceOf[B]
   }
 
-  def deserializeObject[B <: java.io.Serializable](objectGroup: String,
+  def deserializeObject[B <: java.io.Serializable](filePrefix: String, 
+      objectGroup: String,
     manifest: ClassManifest[B]): B = {
     val fis = new FileInputStream(filePrefix + "." + objectGroup)
     val ois = new ObjectInputStream(fis)
@@ -449,7 +769,8 @@ object FasterFinal extends App {
     result.asInstanceOf[B]
   }
 
-  def deserializeMatchingObjects[B <: java.io.Serializable](objectGroup: String,
+  def deserializeMatchingObjects[B <: java.io.Serializable](filePrefix: String, 
+      objectGroup: String,
     foldIndex: Option[Int], isTraining: Option[Boolean],
     isSplit: Option[Boolean], frameLength: Option[Int],
     featureType: Option[Int], artist: Option[String], title: Option[String],
@@ -479,7 +800,7 @@ object FasterFinal extends App {
           val info = FrameSetInfo(foldIndex.toInt, isTraining.toBoolean,
             isSplit.toBoolean, frameLength.toInt, featureType.toInt,
             artist, title, level.toInt, region.toInt)
-          val result = deserializeObject(objectGroup, info, manifest)
+          val result = deserializeObject(filePrefix, objectGroup, info, manifest)
           Some((info, result))
         }
         case _ => None
@@ -493,10 +814,10 @@ object FasterFinal extends App {
       .map(extractSong)).toArray
 
     // Log dataset
-    writeStringToFile(new File(filePrefix + "_songs.txt"),
+    writeStringToFile(new File("data_songs.txt"),
       songs.map(song => song._1._1 + " - " + song._1._2).mkString("\n"))
 
-    serializeObject("music", songs)
+    serializeObject("data", "music", songs)
   }
 
   def denormalize(
@@ -575,7 +896,9 @@ object FasterFinal extends App {
   }
 
   // Cluster instances
-  def cluster(songs: Array[((String, String), Array[(Double, Array[Double])])],
+  def cluster(prefix: String, 
+      songs: Array[((String, String), Array[(Double, Array[Double])])],
+      bagCounts: Map[(Boolean, Int, Int), Int],
     foldIndex: Int, isSplit: Boolean, frameLength: Int) = {
     def randSubset(count: Int, lower: Int, upper: Int, sofar: Set[Int] = Set.empty): Set[Int] =
       if (count == sofar.size) sofar else
@@ -625,17 +948,19 @@ object FasterFinal extends App {
         isSplit,
         frameLength,
         featureType),
-        trainClusterer(instances, bagCountByFrameLength(frameLength - 1)))
+        trainClusterer(instances, bagCounts(isSplit, 
+            featureType, frameLength - 1)))
       instances.delete()
-      serializeObject("cluster", result._1, result._2)
+      serializeObject(prefix, "cluster", result._1, result._2)
     }
   }
 
   // Make histograms of all regions
-  def histograms(foldIndex: Int, isTraining: Boolean, isSplit: Boolean, frameLength: Int,
+  def histograms(prefix: String,
+      foldIndex: Int, isTraining: Boolean, isSplit: Boolean, frameLength: Int,
     featureType: Int, songs: Array[((String, String), Array[(Double, Array[Double])])]) = {
     val clustererWithInfo =
-      deserializeMatchingObjects("cluster", Some(foldIndex), Some(isSplit),
+      deserializeMatchingObjects(prefix, "cluster", Some(foldIndex), Some(isSplit),
         Some(isTraining), Some(frameLength), Some(featureType),
         None, None, None, None, manifest[SimpleKMeans])
 
@@ -659,7 +984,17 @@ object FasterFinal extends App {
           instances = convertFramesToInstances(region.toSeq,
             splitInfo(cInfo.isSplit).featureLengths(cInfo.featureType),
             splitInfo(cInfo.isSplit).featureNames(cInfo.featureType))
-        ) yield (FrameSetInfo(cInfo.foldIndex,
+        ) yield {
+          val histogram = if (instances.numAttributes() == 1) {
+            Array((0,instances.meanOrMode(0)),
+            (0, instances.variance(0)))
+          } else {
+            makeHistogram(
+            (0 until instances.numInstances())
+              .map(i => clusterer.clusterInstance(instances.instance(i))))
+          .toArray
+          }
+          (FrameSetInfo(cInfo.foldIndex,
           isTraining,
           cInfo.isSplit,
           cInfo.frameLength,
@@ -668,11 +1003,9 @@ object FasterFinal extends App {
           title,
           level,
           regionIndex),
-          makeHistogram(
-            (0 until instances.numInstances())
-              .map(i => clusterer.clusterInstance(instances.instance(i))))
-          .toArray))
-          .toArray
+          histogram
+          )
+        }).toArray
 
       val key = FrameSetInfo(cInfo.foldIndex,
         isTraining,
@@ -683,14 +1016,15 @@ object FasterFinal extends App {
         "",
         -1)
       //println(key)
-      serializeObject("histograms", key, currentHistograms)
+      serializeObject(prefix, "histograms", key, currentHistograms)
     }
   }
 
   // Train BoF SVM classifiers
-  def svmClassifiers(foldIndex: Int, isSplit: Boolean, level: Int) = {
+  def svmClassifiers(prefix: String, bagCounts: Map[(Boolean, Int, Int), Int],
+      foldIndex: Int, isSplit: Boolean, level: Int) = {
     val trainingHistograms =
-      deserializeMatchingObjects("histograms", Some(foldIndex), Some(true),
+      deserializeMatchingObjects(prefix, "histograms", Some(foldIndex), Some(true),
         Some(isSplit), None, None, None, None, None, None,
         manifest[Array[(FrameSetInfo, Array[(Int, Double)])]])
         .flatMap(_._2)
@@ -698,28 +1032,28 @@ object FasterFinal extends App {
         .toArray
         .sortBy(_._1)(InfoOrdering)
         .map(record => (record._1, record._2.toMap))
-    val (artistTitles, concatedHistos) = combineHistograms(trainingHistograms, level)
+    val (artistTitles, concatedHistos) = 
+      combineHistograms(bagCounts, trainingHistograms, level)
 
     val classifier = new SMO
     classifier.setRandomSeed(Random.nextInt)
     classifier.buildClassifier(concatedHistos)
     val info = FrameSetInfo(foldIndex, true, isSplit, -1, -1, "", "", level, -1)
 
-    serializeObject("svm", info, classifier)
+    serializeObject(prefix, "svm", info, classifier)
   }
 
   // Evaluate classifiers
-  def evaluate() = {
-    val results = (for (
-      foldIndex <- (0 until folds).par;
+  def evaluateAll(prefix: String, bagCounts: Map[(Boolean, Int, Int), Int]) = {
+    (for (
       isSplit <- List(true, false);
-      level <- 0 to temporalPyramidLevels;
-      (_, classifier) = deserializeMatchingObjects("svm", Some(foldIndex),
-        Some(true), Some(isSplit), None, None, None, None, Some(level),
-        None, manifest[SMO]).next
-    ) yield {
+      level <- 0 to temporalPyramidLevels
+    ) yield evaluateOne(prefix, bagCounts, isSplit, level)
+      /*
+    }
       val testHistograms =
-        deserializeMatchingObjects("histograms", Some(foldIndex), Some(false),
+        deserializeMatchingObjects(prefix, 
+            "histograms", Some(foldIndex), Some(false),
           Some(isSplit), None, None, None, None, None, None,
           manifest[Array[(FrameSetInfo, Array[(Int, Double)])]])
           .flatMap(_._2)
@@ -728,7 +1062,7 @@ object FasterFinal extends App {
           .sortBy(_._1)(InfoOrdering)
           .map(record => (record._1, record._2.toMap))
       val (artistTitles, concatedHistos) =
-        combineHistograms(testHistograms, level)
+        combineHistograms(bagCounts, testHistograms, level)
 
       // Evaluate it
       val predictedNumericClasses =
@@ -763,7 +1097,7 @@ object FasterFinal extends App {
     }).flatten.seq
 
     // Print summary statistics by technique
-    for (
+    (for (
       isSplit <- List(true, false);
       level <- (0 to temporalPyramidLevels)
     ) yield {
@@ -811,6 +1145,156 @@ object FasterFinal extends App {
         .map(record => record._1.artist + " - " + record._1.title)
         .mkString("False positives:\n", "\n", "\n"))
       println()
+      
+      (splitInfo(isSplit).featureNames.mkString(",") + "_level" + level,
+      accuracy)
+    }*/).maxBy(_._2)
+  }
+  
+  def evaluateOne(prefix: String,
+      bagCounts: Map[(Boolean, Int, Int), Int], isSplit: Boolean, level: Int) = {
+    val results = (for (
+      foldIndex <- (0 until folds).par
+    ) yield {
+      val (_, classifier) = deserializeMatchingObjects(prefix, "svm", Some(foldIndex),
+        Some(true), Some(isSplit), None, None, None, None, Some(level),
+        None, manifest[SMO]).next
+      val testHistograms =
+        deserializeMatchingObjects(prefix, 
+            "histograms", Some(foldIndex), Some(false),
+          Some(isSplit), None, None, None, None, None, None,
+          manifest[Array[(FrameSetInfo, Array[(Int, Double)])]])
+          .flatMap(_._2)
+          .filter(record => record._1.level <= level)
+          .toArray
+          .sortBy(_._1)(InfoOrdering)
+          .map(record => (record._1, record._2.toMap))
+      val (artistTitles, concatedHistos) =
+        combineHistograms(bagCounts, testHistograms, level)
+
+      // Evaluate it
+      val predictedNumericClasses =
+        for (instanceIndex <- artistTitles.indices) yield {
+          classifier.classifyInstance(concatedHistos.instance(instanceIndex))
+        }
+      val actualClasses =
+        for ((artist, title) <- artistTitles) yield {
+          artist == "The Beatles"
+        }
+      val beatlesClassNumber = 0.0
+      // This code was used to find the above number
+      /*actualClasses.zip(predictedNumericClasses)
+           .filter(_._1 == true)
+           .groupBy(identity)
+           .maxBy(_._2.size)._1._2*/
+      val predictedClasses = predictedNumericClasses.map(_ == beatlesClassNumber)
+
+      for (
+        ((artist, title), actual, predicted) <- (artistTitles, actualClasses, predictedClasses).zipped.toList
+      ) yield {
+        (FrameSetInfo(foldIndex,
+          false,
+          isSplit,
+          -1,
+          -1,
+          artist,
+          title,
+          level,
+          -1), (actual, predicted))
+      }
+    }).flatten.seq
+
+    // Print summary statistics by technique
+    println("Features were clustered by: " +
+      splitInfo(isSplit).featureNames.mkString(", "))
+    println("Temporal pyramid height: " + level)
+    println()
+
+    // Get the results for the current technique
+    val matchingResult = results
+      .sortBy(_._1)(InfoOrdering)
+
+    // Stats 
+    val truePositives = matchingResult.count(_._2 == (true, true))
+    val trueNegatives = matchingResult.count(_._2 == (false, false))
+    val falsePositives = matchingResult.count(_._2 == (false, true))
+    val falseNegatives = matchingResult.count(_._2 == (true, false))
+    val accuracy = (truePositives + trueNegatives).toDouble /
+      matchingResult.size
+
+    println("Confusion matrix:")
+    println("                               Actual")
+    println("                        Beatles     Not Beatles")
+    println("Predicted      Beatles %7d     %11d" format (truePositives, falsePositives))
+    println("           Not Beatles %7d     %11d" format (falseNegatives, trueNegatives))
+    println()
+    println("Accuracy: " + (accuracy.toString))
+    println()
+    println(matchingResult
+      .filter(_._2 == (true, true))
+      .map(record => record._1.artist + " - " + record._1.title)
+      .mkString("True positives:\n", "\n", "\n"))
+    println(matchingResult
+      .filter(_._2 == (false, false))
+      .map(record => record._1.artist + " - " + record._1.title)
+      .mkString("True negatives:\n", "\n", "\n"))
+    println(matchingResult
+      .filter(_._2 == (true, false))
+      .map(record => record._1.artist + " - " + record._1.title)
+      .mkString("False negative:\n", "\n", "\n"))
+    println(matchingResult
+      .filter(_._2 == (false, true))
+      .map(record => record._1.artist + " - " + record._1.title)
+      .mkString("False positives:\n", "\n", "\n"))
+    println()
+
+    (splitInfo(isSplit).featureNames.mkString(",") + "_level" + level,
+      accuracy)
+  }
+  
+    // All genes are mutated by adding a Gaussian
+  def mutate(pop: Array[Array[Int]]) = {
+    for (genome <- pop) yield {
+      for (gene <- genome) yield {
+        val newGene = gene + (Random.nextGaussian() * 10).toInt
+        if (newGene < 2)
+          2
+        else
+          newGene
+      }
     }
+  }
+  // Single-point crossover
+  def crossover(parent1: Array[Int], parent2: Array[Int]) = {
+    val splitPoint = Random.nextInt(parent1.size.min(parent2.size))
+    val splitP1 = parent1.splitAt(splitPoint)
+    val splitP2 = parent2.splitAt(splitPoint)
+    (splitP1._1 ++ splitP2._2, splitP2._1 ++ splitP1._2)
+  }
+  
+  def selection(pop: Array[Array[Int]], fitnesses: Iterable[Double]) = {
+    // Implement sigma truncation of fitnesses
+    val totalFitness = fitnesses.sum
+    val averageFitness = totalFitness / fitnesses.size
+    val sigmaFitness = sqrt(
+      (for (fitness <- fitnesses) yield pow(fitness - averageFitness, 2)).sum / (fitnesses.size - 1))
+    val scaledFitnesses =
+      for (fitness <- fitnesses) yield {
+        val afterScaling = fitness - (averageFitness - sigmaFitness) // c = 1
+        if (afterScaling < 0)
+          0
+        else
+          afterScaling
+      }
+    
+    // Roulette selection
+    val randomNum = Random.nextDouble() * scaledFitnesses.sum
+    def select(num: Double, pop: Array[(Array[Int], Double)]): Array[Int] = {
+      if (num - pop.head._2 > 0.0)
+        select(num - pop.head._2, pop.tail)
+      else
+        pop.head._1
+    }
+    select(randomNum, pop zip scaledFitnesses)
   }
 }
