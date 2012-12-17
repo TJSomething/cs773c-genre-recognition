@@ -126,7 +126,7 @@ object FasterFinal {
     "-c <bag counts> <job split number> <max jobs>: cluster data\n" +
     "-h <job split number> <max jobs>: build histograms\n" +
     "-s <bag counts> <job split number> <max jobs>: create SVM classifiers\n" +
-    "-e: Evaluate\n" +
+    "-e <bag counts> <job split number> <max jobs>: Evaluate\n" +
     "--evolve <Spark server> <population size> <is split>: Evolve an better bag count\n\n" +
     "Bag counts are comma-separated lists of integers representing\n" +
     "the number of bags used for each kind of feature:\n" +
@@ -153,7 +153,9 @@ object FasterFinal {
           bagCounts,
           parseBagCounts(bagCounts), splitNum.toInt,
           maxSplit.toInt)
-      case List("-e", bagCounts) => evaluateAll(bagCounts, parseBagCounts(bagCounts))
+      case List("-e", bagCounts, splitNum, maxSplit) => 
+        evaluateBagCounts(bagCounts.split(",").map(_.toInt), splitNum.toInt,
+            maxSplit.toInt, false, None)
       case List("--evolve", sparkServer, popSize, isSplit) =>
         evolve(popSize.toInt, sparkServer, isSplit.toBoolean, 0)
       case _ => {
